@@ -62,7 +62,7 @@ recompute_image_defaults() {
   GUI_IMAGE_DEFAULT="${prefix}/mowglinext-gui:${IMAGE_TAG}"
   # Universal GNSS is a separately released multi-arch sidecar. Never derive
   # this immutable reference from MowgliNext's IMAGE_TAG.
-  UNIVERSAL_GNSS_IMAGE_DEFAULT="ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.1-rc4@sha256:061351843f5f6a1788207ca3448c04634d937e1de748f4ea4a6e351dae097ccb"
+  UNIVERSAL_GNSS_IMAGE_DEFAULT="ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.3-rc1@sha256:781579c2cf79a6932ae8d64e8b395957de09f59f638df1136086351cd66e7e40"
 }
 
 is_supported_hardware_backend() {

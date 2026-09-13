@@ -1,4 +1,4 @@
-name: Sensors — GPS
+name: Sensors — GPS bridge
 
 on:
   push:
@@ -11,13 +11,7 @@ on:
       - 'ros2/src/external/universal-gnss'
       - 'ros2/src/external/universal-gnss/**'
       - '.github/workflows/sensors-gps.yml'
-      - '.github/workflows/_sensor-docker.yml'
-  workflow_dispatch:
-    inputs:
-      no-cache:
-        description: 'Build without Docker layer cache'
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 concurrency:
   group: sensors-gps-${{ github.ref }}
@@ -25,57 +19,16 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
-  build:
-    uses: ./.github/workflows/_sensor-docker.yml
-    with:
-      image: gps
-      context: .
-      dockerfile: sensors/gps/Dockerfile
-      smoke-test: |
-        set -euo pipefail
-        find /opt -name setup.bash 2>/dev/null | sort
-        set +u
-        source /opt/ros/kilted/setup.bash
-        for f in /opt/gnss_sidecar/setup.bash; do
-          [ -f "$f" ] && echo "sourcing $f" && source "$f"
-        done
-        set -u
-        ros2 pkg list | sort | grep -Ei "mowgli|gnss|universal|rtcm" || true
-        ros2 pkg prefix mowgli_interfaces
-        ros2 pkg prefix universal_gnss_ros2
-        ros2 pkg list | grep -x mowgli_interfaces
-        ros2 pkg list | grep -x universal_gnss_ros2
-        ros2 pkg executables universal_gnss_ros2 | grep -x "universal_gnss_ros2 receiver_node"
-        ros2 pkg executables universal_gnss_ros2 | grep -x "universal_gnss_ros2 ntrip_node"
-        ros2 pkg list | grep -x mowgli_gnss_bridge
-        ros2 pkg executables mowgli_gnss_bridge | grep -x "mowgli_gnss_bridge universal_gnss_topic_bridge"
-        test -x /universal_gnss_topic_bridge.py
-        python3 -m py_compile /universal_gnss_topic_bridge.py
-        python3 - <<'PY'
-        from mowgli_interfaces.msg import GnssStatus as MowgliGnssStatus
-        from rtcm_msgs.msg import Message as RtcmMessage
-        from universal_gnss_msgs.msg import GnssStatus as UniversalGnssStatus
-        from universal_gnss_msgs.msg import RtcmFrame
-        assert MowgliGnssStatus.CAP_RTK_MODE > 0
-        assert UniversalGnssStatus.CAP_RTK_MODE > 0
-        assert hasattr(RtcmFrame, "data")
-        assert hasattr(RtcmMessage, "message")
-        PY
-      no-cache: ${{ inputs.no-cache == true }}
-
   # ---------------------------------------------------------------------------
   # mowgli_gnss_bridge lives in sensors/gps/, OUTSIDE the ros2/ colcon
-  # workspace, so the "ROS2 — CI" job never sees it. Its Dockerfile builds it
-  # with -DBUILD_TESTING=OFF and deletes /ws/build, so its gtests were compiled
-  # by nothing and run by nothing. This job is the only thing that executes
-  # them. Keep it in lockstep with the builder stage of sensors/gps/Dockerfile:
-  # same distro, same package set.
+  # workspace, so the "ROS2 — CI" job never sees it. This job builds only the
+  # public interfaces consumed by Mowgli and the bridge itself. The complete
+  # Universal GNSS runtime is tested and published by its own repository.
   # ---------------------------------------------------------------------------
   test:
-    name: Test mowgli_gnss_bridge
+    name: Test GNSS interfaces + bridge
     runs-on: ubuntu-latest
     container: ros:kilted-ros-base
     steps:
@@ -123,21 +76,23 @@ jobs:
           cp sensors/gps/universal_gnss_topic_bridge.py /ws/src/
           cp -r ros2/src/external/universal-gnss/universal_gnss_msgs \
             /ws/src/universal_gnss_msgs
-          ls /ws/src
+          cd /ws
+          expected=$'mowgli_gnss_bridge\nmowgli_interfaces\nuniversal_gnss_msgs'
+          actual="$(colcon list --names-only | sort)"
+          printf '%s\n' "$actual"
+          test "$actual" = "$expected"
 
       - name: Build dependencies
         shell: bash
         run: |
           set -eo pipefail
           # ROS's setup.bash dereferences unset AMENT_* variables, so it cannot
-          # be sourced under `set -u`. sensors/gps/Dockerfile works around this
-          # the same way.
+          # be sourced under `set -u`.
           source /opt/ros/kilted/setup.bash
           cd /ws
           # Dependencies only, tests off — we are not here to test upstream.
           colcon build \
-            --packages-skip mowgli_gnss_bridge \
-            --packages-up-to mowgli_gnss_bridge \
+            --packages-select mowgli_interfaces universal_gnss_msgs \
             --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF -Wno-dev \
             --event-handlers console_cohesion+
 

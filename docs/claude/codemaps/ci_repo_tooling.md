@@ -43,7 +43,7 @@
 | `firmware-ci.yml` | 123 | `board_defaults_parity.py` guard, PlatformIO build matrix, tagged prebuilt-binary release |
 | `gui-ci.yml` | 76 | vitest + `tsc --noEmit` + eslint on `gui/web/**` (node 22) |
 | `msg-codegen-drift.yml` | 70 | Firmware `ros_lib` + Go + TS message-type drift gate |
-| `sensors-gps.yml` | 67 | Builds `gps` image from `sensors/gps/Dockerfile`; long in-image smoke test (L37–66) |
+| `sensors-gps.yml` | — | Builds/tests only the minimal GNSS interface/bridge workspace; publishes no image |
 | `wiki-sync.yml` | 50 | Copies `wiki/*.md` into the GitHub wiki repo and commits as `github-actions[bot]` |
 | `pages.yml` | 43 | Uploads `docs/` and deploys to GitHub Pages (env `github-pages`) |
 | `protocol-version-drift.yml` | 43 | COBS wire fingerprint vs `MOWGLI_PROTOCOL_VERSION` |
@@ -124,7 +124,7 @@ Also deployed by `pages.yml` but not part of the composer logic: `docs/CNAME` (`
 |--------|-------------|------|
 | `ghcr.io/<repo>/mowgli-ros2` (target `runtime`, `ros2/Dockerfile`) | `ros2-docker.yml` | `type=ref,event=branch`, semver, `sha-<short>` |
 | `ghcr.io/<repo>/mowglinext-gui` (context `./gui`) | `gui-docker.yml` | same |
-| `ghcr.io/<repo>/{gps,lidar-ldlidar,lidar-rplidar,lidar-stl27l}` | `_sensor-docker.yml` callers | same |
+| `ghcr.io/<repo>/{lidar-ldlidar,lidar-rplidar,lidar-stl27l}` | `_sensor-docker.yml` callers | same |
 | GitHub Release assets `dist/*.bin`, `dist/*.elf`, `dist/manifest.json` | `firmware-ci.yml` `release` | tag `v*.*.*` |
 | GitHub Pages site (mowgli.garden) | `pages.yml` | — |
 | GitHub wiki | `wiki-sync.yml` | — |

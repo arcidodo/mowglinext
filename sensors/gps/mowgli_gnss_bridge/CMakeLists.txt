@@ -131,10 +131,8 @@ if(BUILD_TESTING)
   #
   # The reference Python bridge lives one level UP in the repo
   # (sensors/gps/universal_gnss_topic_bridge.py) and is therefore outside this
-  # package. A colcon workspace assembled by copying only the package -- which
-  # is what sensors/gps/Dockerfile and the CI test job both do -- does not
-  # contain it, and the test cannot run. Copy it next to the package in the
-  # workspace to enable this gate.
+  # package. The minimal CI workspace copies it next to the package so this
+  # parity gate can run.
   set(_reference_python_bridge
     "${CMAKE_CURRENT_SOURCE_DIR}/../universal_gnss_topic_bridge.py")
   if(EXISTS "${_reference_python_bridge}")

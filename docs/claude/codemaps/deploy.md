@@ -125,7 +125,6 @@
 | `docker/logs/*.py`, `docker/logs/mow_sessions/*.py` | 37–130 each | Ad-hoc field-analysis tools (`motion_test.py`, `yaw_compare.py`, `xtrack.py`, `analyze_swath_turns.py`, `square_test.py`, …) |
 | `docker/logs/mow_sessions/*.md` | 70 / 135 | Archived 2026-06-11 fusion-graph field reviews |
 | **`sensors/`** | | |
-| `sensors/gps/Dockerfile` | 91 | Universal GNSS sidecar image — **build context = repo root**; builds `mowgli_interfaces`, `universal_gnss_ros2`, `mowgli_gnss_bridge` + the `gnss_tools` CLI into `/opt/gnss_sidecar` |
 | `sensors/mavros/{README.md,image.env,test_integration.py}` | — | Source-free MowgliNext integration contract for the external MowgliMAVROS sidecar: canonical immutable image pin, ownership/device/config documentation, and static validation. It does **not** build or vendor MowgliMAVROS. |
 | `sensors/gps/start_gps.sh` | 599 | Image CMD: resolves config (YAML → env → default), applies the receiver profile, then runs `receiver_node` + topic bridge + optional `ntrip_node` |
 | `sensors/gps/universal_gnss_topic_bridge.py` | 406 | Retained Python bridge (`GNSS_BRIDGE_IMPL=python`) |
@@ -223,13 +222,12 @@ bash install/mowglinext.sh --branch=dev --image-tag=dev --gnss=auto --gnss-conne
 # Simulation
 docker compose -f docker/docker-compose.simulation.yaml up dev-sim
 
-# Sensor images (gps needs the REPO ROOT as context)
-docker build -t mowgli-gps -f sensors/gps/Dockerfile .
+# Sensor images (the GPS sidecar comes from Universal GNSS release v0.1.3-rc1)
 docker build -t mowgli-lidar --target runtime sensors/lidar-ldlidar/
 GNSS_DRY_RUN=true GNSS_CONFIG_PATH=install/config/mowgli/mowgli_robot.yaml bash sensors/gps/start_gps.sh   # prints the commands, launches nothing
 ```
 
-CI: sensor images build via `.github/workflows/sensors-{gps,lidar-ldlidar,lidar-rplidar,lidar-stl27l}.yml`, each calling the reusable `_sensor-docker.yml` (multi-arch amd64+arm64, push-by-digest then manifest merge; `sensors-gps.yml` L37–66 carries the only smoke test). `sensors-mavros.yml` instead runs the source-level external-sidecar contract check and never builds or publishes MowgliMAVROS. `ros2-docker.yml` builds `mowgli-ros2`, `gui-docker.yml` builds `mowglinext-gui`. `ros2-ci.yml` watches `install/config/mowgli/**` (L9, L76) for the config-drift job. **No workflow runs `install/test_mowglinext.sh` or `install/tests/*` — run them by hand before touching the installer.**
+CI: LiDAR sensor images build via `.github/workflows/sensors-lidar-{ldlidar,rplidar,stl27l}.yml`, each calling the reusable `_sensor-docker.yml` (multi-arch amd64+arm64, push-by-digest then manifest merge). `sensors-gps.yml` builds/tests only the interface/bridge workspace and publishes no image. `sensors-mavros.yml` runs the source-level external-sidecar contract check and never builds or publishes MowgliMAVROS. `ros2-docker.yml` builds `mowgli-ros2`, `gui-docker.yml` builds `mowglinext-gui`. `ros2-ci.yml` watches `install/config/mowgli/**` (L9, L76) for the config-drift job. **No workflow runs `install/test_mowglinext.sh` or `install/tests/*` — run them by hand before touching the installer.**
 
 ## Change coupling — "if you change X, also update Y"
 
@@ -240,7 +238,7 @@ CI: sensor images build via `.github/workflows/sensors-{gps,lidar-ldlidar,lidar-
 - **`cyclonedds.xml`** exists twice: `install/config/cyclonedds.xml` (seed) and `docker/config/cyclonedds.xml` (tracked, actually mounted). Edit BOTH — the seed-if-absent guard never fires on a repo clone (`docker/config/cyclonedds.xml` L2–5).
 - **GNSS param name change** → `sensors/gps/start_gps.sh` resolver → `install/lib/env.sh` `load_gnss_ntrip_runtime_defaults` L90 + `install/lib/checks.sh` `check_generated_gps_yaml_alignment` L175 → `install/config/mowgli/mowgli_robot.yaml` → the GUI's GNSS settings page.
 - **`mowgli_gnss_bridge` behaviour** → keep `sensors/gps/universal_gnss_topic_bridge.py` behaviour-identical (it is the `GNSS_BRIDGE_IMPL=python` fallback) → `sensors/gps/mowgli_gnss_bridge/test/` → `sensors-gps.yml` smoke test asserts both executables exist.
-- **universal-gnss submodule bump** → `.gitmodules` pins the **mowglinext fork** on branch `main` (both issue #395 fixes are upstream in that fork now); `sensors/gps/Dockerfile` L39–46 copies seven of its packages → re-pin the gitlink, not just the branch.
+- **universal-gnss submodule bump** → keep the gitlink pinned to the published interface commit; runtime release/image changes use the independently published Universal GNSS sidecar (`v0.1.3-rc1`), never copied runtime sources.
 - **New udev symlink** → `lib/udev.sh` `build_dynamic_udev_rules` → `lib/checks.sh` `check_devices` L73 → the compose fragment's device path default → `install/tests/test_udev_install.sh`.
 - **Image name change** → `config.sh` `recompute_image_defaults` L45–51 must match the workflow `IMAGE_NAME`/`inputs.image` exactly, and `docker/.env.example` L24–28.
 
@@ -248,7 +246,6 @@ CI: sensor images build via `.github/workflows/sensors-{gps,lidar-ldlidar,lidar-
 
 - `install/compose/docker-compose.foxglove.yml` is dead and would break the stack if wired in: it passes `enable_coverage:=true`, an argument no launch file in `ros2/src` declares.
 - The MAVROS fragment deliberately has no standalone `mowgli-ntrip` service: `mowgli_ntrip_client` is supplied and conditionally launched by the pinned external sidecar.
-- The gps image **must** be built with the monorepo root as context (`sensors/gps/Dockerfile` L5–8); `docker build sensors/gps/` fails because it copies from `ros2/src/`.
 - `install/config/mowgli/{hardware_bridge,twist_mux,foxglove_bridge}.yaml` are never read: `mowgli.launch.py` L185–187, L271 load them from the package share dir. Only `mowgli_robot.yaml` is read from `/ros2_ws/config` (`robot_config_util.py` L31).
 - `LIDAR_ENABLED` in `.env` only decides whether the **container** is composed. Flipping it does NOT change the ROS stack's LiDAR mode — that is `mowgli_robot.yaml:lidar_enabled` (`docker-compose.base.yml` L13–17; guarded by `ros2/src/mowgli_bringup/test/test_robot_config_util.py` L436–453).
 - `write_compose_merged` uses `config --no-interpolate` so `${MOWGLI_ROS2_IMAGE}` stays a literal in the generated file; the Bash fallback (`compose.sh` L169–206) is a naive section-concatenator — never hand-edit `docker/docker-compose.yaml`, regenerate it.

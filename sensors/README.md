@@ -25,7 +25,8 @@ image pin, device/config mounts, ownership split, and validation command.
 
 Direct GNSS installs use the externally published Universal GNSS sidecar only
 (`GNSS_STACK` accepts `universal|disabled`; "no GNSS" means not composing the
-container). `UNIVERSAL_GNSS_IMAGE` is required and must be pinned separately
+container). The official runtime release is `v0.1.3-rc1`.
+`UNIVERSAL_GNSS_IMAGE` is required and must be pinned separately
 from MowgliNext `IMAGE_TAG`. `GNSS_DEVICE` maps one stable host path (prefer
 `/dev/serial/by-id/...`) to `/dev/gnss-receiver`; the sidecar is the sole
 owner of that device, parsing and NTRIP. `HARDWARE_BACKEND=mavros` does not
@@ -53,7 +54,7 @@ To add support for a different GPS or LiDAR model:
 
 ## Building
 
-Each image has its own CI caller (`.github/workflows/sensors-{gps,lidar-ldlidar,lidar-rplidar,lidar-stl27l}.yml`), all delegating to the reusable `.github/workflows/_sensor-docker.yml`, which builds `linux/amd64` and `linux/arm64` and pushes a merged multi-arch manifest to GHCR.
+Each LiDAR image has its own CI caller (`.github/workflows/sensors-lidar-{ldlidar,rplidar,stl27l}.yml`) delegating to the reusable `.github/workflows/_sensor-docker.yml`, which builds `linux/amd64` and `linux/arm64` and pushes a merged multi-arch manifest to GHCR. `sensors-gps.yml` builds and tests only `mowgli_interfaces`, `universal_gnss_msgs` and `mowgli_gnss_bridge`; Universal GNSS publishes the complete `mowgli-gps` sidecar from its own repository.
 
 To build locally:
 
@@ -68,9 +69,9 @@ docker build -t mowgli-lidar-stl27l  --target runtime sensors/lidar-stl27l/
 docker build -t mowgli-lidar-rplidar --target runtime sensors/lidar-rplidar/
 ```
 
-The legacy `sensors/gps/Dockerfile` is not part of the deployment path. The
-bridge is built into `mowgli-ros2`; MowgliNext does not duplicate Universal
-GNSS sources or runtime ownership.
+There is no Mowgli-owned GPS image Dockerfile. The bridge is built into
+`mowgli-ros2`; MowgliNext does not duplicate Universal GNSS sources or runtime
+ownership.
 
 ## For contributors
 
