@@ -35,6 +35,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<IsRainDetected>("IsRainDetected");
   factory.registerNodeType<NeedsDocking>("NeedsDocking");
   factory.registerNodeType<IsBatteryAbove>("IsBatteryAbove");
+  factory.registerNodeType<IsManualResumeRequested>("IsManualResumeRequested");
   factory.registerNodeType<IsCommand>("IsCommand");
 
   factory.registerNodeType<IsGPSFixed>("IsGPSFixed");
@@ -43,6 +44,7 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<IsBoundaryViolation>("IsBoundaryViolation");
   factory.registerNodeType<IsLocalizationDegraded>("IsLocalizationDegraded");
   factory.registerNodeType<IsLethalBoundaryViolation>("IsLethalBoundaryViolation");
+  factory.registerNodeType<IsDigEscalated>("IsDigEscalated");
   factory.registerNodeType<IsDocking>("IsDocking");
   factory.registerNodeType<IsNewRain>("IsNewRain");
   factory.registerNodeType<IsRainModeAtLeast>("IsRainModeAtLeast");
@@ -72,6 +74,10 @@ void registerAllNodes(BT::BehaviorTreeFactory& factory)
   factory.registerNodeType<NavigateInsideBoundary>("NavigateInsideBoundary");
   factory.registerNodeType<BackUp>("BackUp");
   factory.registerNodeType<ClearCommand>("ClearCommand");
+  // Guard-halt marker: a guard handler that halts the Root mid-mow must tick
+  // this, or its pauses are charged to GetNextUnmowedArea's no-progress budget
+  // and a flapping sensor fails the mow at 0 swaths (field 2026-09-07/08).
+  factory.registerNodeType<MarkGuardHalt>("MarkGuardHalt");
   factory.registerNodeType<EndSession>("EndSession");
   factory.registerNodeType<IncrementSkippedSwaths>("IncrementSkippedSwaths");
   factory.registerNodeType<SaveObstacles>("SaveObstacles");

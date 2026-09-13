@@ -20,6 +20,16 @@ hardware_bridge:
     # minimum for the WT901, giving ~√5 ≈ 2.2× tighter gyro/accel offsets.
     imu_cal_samples: 1000
 
+    # Common motion shaping at the final host -> firmware boundary. Every
+    # source has already passed through twist_mux here, so these limits cover
+    # FTC coverage, RPP transit, docking and teleop without another ROS node.
+    # Exact zero commands bypass the ramp and stop immediately; a direction
+    # reversal decelerates through zero, then accelerates in the new direction.
+    cmd_vel_linear_accel_limit: 0.30    # m/s^2
+    cmd_vel_linear_decel_limit: 0.60    # m/s^2 for non-zero targets
+    cmd_vel_angular_accel_limit: 1.0    # rad/s^2
+    cmd_vel_angular_decel_limit: 2.0    # rad/s^2 for non-zero targets
+
     # 2026-07-17 Option C (task #34): the host-side closed-loop angular-rate
     # (yaw) controller that used to be configured here (Option B, task #24 —
     # angular_rate_ki/_kff/_kp/_loop_enabled) is REMOVED. The yaw-rate loop
@@ -48,7 +58,9 @@ hardware_bridge:
                                # 0.47 m/s spin). It is the false-fire guard and
                                # is deliberately not shortened — nothing in the
                                # field logs justifies a shorter one.
-    dig_min_cmd_speed: 0.05    # below this we aren't commanding travel [m/s]
+    dig_min_cmd_speed: 0.05    # below this the fastest commanded tyre is not
+                               # being asked to travel [m/s]. Uses both vx and
+                               # wz, so a stalled pure pivot stays protected.
     dig_min_wheel_dist: 0.15   # the WORST WHEEL must claim this much ground
                                # travel first [m] (without it a BLOCKED wheel —
                                # the firmware's case, not ours — looks
@@ -101,3 +113,46 @@ hardware_bridge:
     dig_reverse_timeout_s: 4.0  # hard time bound on the escape [s]
     dig_monitor_rate: 10.0     # Hz
     dig_pose_timeout_s: 1.0    # fused pose older than this = stand down [s]
+
+    # ── Repeat-dig escalation (mowgli_hardware/dig_escalation.hpp) ─────────
+    #
+    # The per-event response above is UNCHANGED by these. They only notice
+    # that the same dig keeps happening: N latches inside a small radius and a
+    # short window is not a dig to route around, it is an obstruction the
+    # robot cannot resolve on its own, and the mission must stop and tell the
+    # operator instead of reversing and retrying indefinitely.
+    #
+    # Issue #500, instrumented capture 2026-09-04: the robot wedged against a
+    # physical object and latched 17 times — FIVE of them inside 23 s in a
+    # 6 cm square around map (-5.39, 11.85) — then kept latching for 5.5 more
+    # minutes while the chassis crawled 20 cm, with the blade RPM collapsing
+    # to 0 and recovering repeatedly (3482 -> 622 -> 0 -> 503 -> 1394 -> 3259
+    # -> 0) and the LiDAR reporting the object at 0.29-0.52 m throughout.
+    # Neither the bounded reverse (which works — the robot does back off) nor
+    # the 0.60 m pending keepout (which works — but the robot is not
+    # re-entering a mapped cell) can break that loop: the next planned
+    # manoeuvre simply aims the robot back at the same physical object.
+    #
+    # The bridge only raises a latched flag on ~/dig_escalated and logs; it
+    # commands nothing beyond the hard stop and bounded reverse it already
+    # did. Stopping the mission is the BT's DigObstructionGuard. The flag
+    # clears when the robot reaches the charger.
+    dig_escalate_radius_m: 0.50  # latches this close count as the same spot
+                               # [m]. Comfortably wider than the 6 cm field
+                               # cluster and comfortably tighter than the
+                               # 1.2 m separating the closest pair of
+                               # genuinely distinct digs in the same run.
+                               # <= 0 disables escalation.
+    dig_escalate_window_s: 60.0  # look-back [s]. Spans the 23 s cluster with
+                               # room to spare while letting a spot the robot
+                               # successfully left go stale. <= 0 disables.
+    dig_escalate_count: 3      # latches (including the current one) required
+                               # inside the radius and window. 3 fires on the
+                               # third of the field cluster, ~11 s into an
+                               # episode that otherwise ran 5.5 more minutes,
+                               # and never on the three isolated true
+                               # positives of that run (4.7 m, 5.9 m and
+                               # 1.2 m apart). <= 1 disables — escalating on
+                               # a single latch would defeat the per-event
+                               # response, which is the correct handling of
+                               # an isolated dig.

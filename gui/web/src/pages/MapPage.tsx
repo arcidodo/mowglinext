@@ -21,6 +21,7 @@ import {MowingFeature, MowingAreaFeature, DockFeatureBase, MowingFeatureBase, Na
 import {useMapEditHistory} from "./map/hooks/useMapEditHistory.ts";
 import {useMapOffset} from "./map/hooks/useMapOffset.ts";
 import {useMapBearing} from "./map/hooks/useMapBearing.ts";
+import {useMapBearingCamera} from "./map/hooks/useMapBearingCamera.ts";
 import {useManualMode} from "./map/hooks/useManualMode.ts";
 import {useMapEditing} from "./map/hooks/useMapEditing.ts";
 import {useMapStreams} from "./map/hooks/useMapStreams.ts";
@@ -121,9 +122,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const robotPoseRef = useRef<{ x: number; y: number; heading: number } | null>(null)
     const mapInstanceRef = useRef<MapboxMap | null>(null)
     const drawRef = useRef<import('@mapbox/mapbox-gl-draw').default | null>(null);
-    // Stable ref to the 'rotateend' listener so it can be removed on unmount
-    // (StrictMode mounts twice, otherwise the handler stacks).
-    const rotateEndHandlerRef = useRef<(() => void) | null>(null);
 
     // Only include editable polygon features for DrawControl — exclude mower,
     // paths, and other display-only features so that frequent pose updates don't
@@ -146,17 +144,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     const {offsetX, offsetY, handleOffsetX, handleOffsetY} = useMapOffset({config, setConfig, notification});
     const {bearing, handleBearing} = useMapBearing({config, setConfig, notification});
 
-    // Apply bearing imperatively when the user edits it from the rotation
-    // panel (slider/input/reset button). Mapbox-GL's `setBearing` rotates
-    // the camera without remounting the Map; using initialViewState alone
-    // would freeze the rotation at first paint and ignore later changes.
-    useEffect(() => {
-        const m = mapInstanceRef.current;
-        if (!m) return;
-        if (Math.abs(m.getBearing() - bearing) > 0.5) {
-            m.easeTo({bearing, duration: 200});
-        }
-    }, [bearing]);
+    const onMapLoad = useMapBearingCamera({mapInstanceRef, bearing, onBearingChange: handleBearing, interactive: !compact});
 
     const _datumLon = parseFloat(settings["datum_lon"] ?? 0)
     const _datumLat = parseFloat(settings["datum_lat"] ?? 0)
@@ -239,7 +227,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
 
     const [mowingAreas, setMowingAreas] = useState<{ key: string, label: string, feat: Feature }[]>([])
 
-    const {map, setMap, path, plan, lidarCollection, mowProgressImage, highLevelStatus, joyStream, dynamicObstacles} = useMapStreams({
+    const {map, setMap, path, plan, lidarCollection, mowProgressImage, lidarMapImage, highLevelStatus, joyStream, dynamicObstacles} = useMapStreams({
         editMap,
         settings,
         offsetX,
@@ -625,16 +613,6 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [dockPlacementMode]);
 
-    // Remove the map's 'rotateend' listener on unmount (added in onLoad).
-    useEffect(() => {
-        return () => {
-            const m = mapInstanceRef.current;
-            if (m && rotateEndHandlerRef.current) {
-                m.off('rotateend', rotateEndHandlerRef.current);
-                rotateEndHandlerRef.current = null;
-            }
-        };
-    }, []);
 
     const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}}) => {
         if (!dockPlacementMode) return;
@@ -755,6 +733,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                          style={{width: '100%', height: '100%'}}
                                                          mapStyle={useSatellite ? "mapbox://styles/mapbox/satellite-streets-v12" : "mapbox://styles/mapbox/dark-v11"}
                                                          interactive={false}
+                                                         onLoad={onMapLoad}
                                                          attributionControl={false}
                 >
                     {tileUri ? <Source type={"raster"} id={"custom-raster"} tiles={[tileUri]} tileSize={256}/> : null}
@@ -872,11 +851,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         <div style={{
             // Full-bleed the map across the AppShell's main padding.
             // Desktop main padding is 24px top / 32px horizontal / 48px bottom.
-            // Mobile main padding is 12px top / 14px horizontal / 110px bottom.
+            // Mobile main padding includes the bottom safe area as well.
             position: 'relative',
-            height: isMobile ? 'calc(100% + 122px)' : 'calc(100% + 72px)',
+            height: isMobile ? 'calc(100% + 122px + env(safe-area-inset-bottom, 0px))' : 'calc(100% + 72px)',
             width:  isMobile ? 'calc(100% + 28px)'  : 'calc(100% + 64px)',
-            margin: isMobile ? '-12px -14px -110px' : '-24px -32px -48px',
+            margin: isMobile ? '-12px -14px calc(-110px - env(safe-area-inset-bottom, 0px))' : '-24px -32px -48px',
         }}>
             <NewAreaModal
                 open={modalOpen}
@@ -909,19 +888,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                          }}
                                                          style={{width: '100%', height: '100%'}}
                                                          mapStyle={useSatellite ? "mapbox://styles/mapbox/satellite-streets-v12" : "mapbox://styles/mapbox/dark-v11"}
-                                                         onLoad={(e) => {
-                                                             const m = e.target as unknown as MapboxMap;
-                                                             mapInstanceRef.current = m;
-                                                             // Capture user-driven rotation (right-click drag on
-                                                             // desktop, two-finger rotate on touch — both enabled
-                                                             // by default in mapbox-gl) and persist via the same
-                                                             // debounced handler the slider uses. Keep a stable ref
-                                                             // so the unmount effect can remove it (StrictMode
-                                                             // mounts twice, otherwise the handler stacks).
-                                                             const onRotateEnd = () => handleBearing(m.getBearing());
-                                                             rotateEndHandlerRef.current = onRotateEnd;
-                                                             m.on('rotateend', onRotateEnd);
-                                                         }}
+                                                         onLoad={onMapLoad}
                                                          onClick={handleMapClick}
                                                          interactiveLayerIds={DYN_OBSTACLE_INTERACTIVE_LAYERS}
                                                          onMouseMove={handleMapMouseMove}
@@ -1034,6 +1001,16 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         {/* Persistent tracked-obstacle polygons + id labels + hover/select highlight */}
                         {renderDynObstacleLayers(true)}
                     </Source>
+                    {/* fusion_graph's LiDAR anchor map (walls as ink, scanned ground as a faint wash). */}
+                    {lidarMapImage && (
+                        <Source type={"image"} id={"lidar-map"} url={lidarMapImage.url} coordinates={lidarMapImage.coordinates}>
+                            <Layer type={"raster"} id={"lidar-map-layer"} paint={{
+                                "raster-opacity": 0.85,
+                                "raster-fade-duration": 0,
+                                "raster-resampling": "nearest",
+                            }}/>
+                        </Source>
+                    )}
                     {mowProgressImage && (
                         <Source type={"image"} id={"mow-progress"} url={mowProgressImage.url} coordinates={mowProgressImage.coordinates}>
                             <Layer type={"raster"} id={"mow-progress-layer"} paint={{
@@ -1042,18 +1019,21 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             }}/>
                         </Source>
                     )}
-                    <Source type={"geojson"} id={"lidar"} data={lidarCollection}>
-                        <Layer type={"circle"} id={"lidar-points"} paint={{
-                            "circle-radius": 3,
-                            "circle-color": [
-                                "case",
-                                ["==", ["get", "intensity"], "hit"],
-                                LAYER_COLORS.lidarHit,
-                                LAYER_COLORS.lidarMiss
-                            ],
-                            "circle-stroke-width": 0,
-                        }}/>
-                    </Source>
+                    {/* Raw scan points only until the LiDAR map exists — then the map replaces them. */}
+                    {!lidarMapImage && (
+                        <Source type={"geojson"} id={"lidar"} data={lidarCollection}>
+                            <Layer type={"circle"} id={"lidar-points"} paint={{
+                                "circle-radius": 3,
+                                "circle-color": [
+                                    "case",
+                                    ["==", ["get", "intensity"], "hit"],
+                                    LAYER_COLORS.lidarHit,
+                                    LAYER_COLORS.lidarMiss
+                                ],
+                                "circle-stroke-width": 0,
+                            }}/>
+                        </Source>
+                    )}
                 </Map> : <Spinner/>}
                 <JoystickOverlay
                     visible={highLevelStatus.highLevelStatus.state_name === "RECORDING" || highLevelStatus.highLevelStatus.state_name === "MANUAL_MOWING" || manualMode}
