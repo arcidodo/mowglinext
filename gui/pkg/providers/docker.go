@@ -124,6 +124,15 @@ func (i *DockerProvider) ContainerRun(ctx context.Context, spec types2.Container
 		return types2.ContainerRunResult{}, errors.New("container command is required")
 	}
 
+	devices := make([]container.DeviceMapping, 0, len(spec.Devices))
+	for _, device := range spec.Devices {
+		devices = append(devices, container.DeviceMapping{
+			PathOnHost:        device.PathOnHost,
+			PathInContainer:   device.PathInContainer,
+			CgroupPermissions: device.CgroupPermissions,
+		})
+	}
+
 	created, err := i.client.ContainerCreate(
 		ctx,
 		&container.Config{
@@ -136,6 +145,8 @@ func (i *DockerProvider) ContainerRun(ctx context.Context, spec types2.Container
 		},
 		&container.HostConfig{
 			Binds:      append([]string(nil), spec.Binds...),
+			Devices:    devices,
+			GroupAdd:   append([]string(nil), spec.GroupAdd...),
 			Privileged: spec.Privileged,
 			AutoRemove: spec.AutoRemove,
 		},

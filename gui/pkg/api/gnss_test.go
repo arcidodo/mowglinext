@@ -165,6 +165,7 @@ func defaultGNSSYAMLWithSignalGroup(serialDevice string, receiverFamily string, 
 func newGNSSTestDB(t *testing.T, yamlContent string) (*pkgtypes.MockDBProvider, string) {
 	t.Helper()
 	stubGNSSDeviceInspection(t)
+	stubGNSSSerialDeviceAccess(t)
 	stubGNSSRuntimeRegen(t)
 	yamlFile := writeGNSSConfigFile(t, yamlContent)
 	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\n")
@@ -172,6 +173,13 @@ func newGNSSTestDB(t *testing.T, yamlContent string) (*pkgtypes.MockDBProvider, 
 	require.NoError(t, db.Set("system.mower.yamlConfigFile", []byte(yamlFile)))
 	require.NoError(t, db.Set("system.mower.runtimeEnvFile", []byte(envFile)))
 	return db, envFile
+}
+
+func stubGNSSSerialDeviceAccess(t *testing.T) {
+	t.Helper()
+	previous := gnssSerialDeviceAccess
+	gnssSerialDeviceAccess = func(string) (string, string, error) { return "20", "/dev/ttyUSB0", nil }
+	t.Cleanup(func() { gnssSerialDeviceAccess = previous })
 }
 
 func stubGNSSRuntimeRegen(t *testing.T) {
@@ -341,6 +349,12 @@ func TestGNSSApply_PassesConfigBaudAndRestartsAfterSuccess(t *testing.T) {
 	require.Len(t, docker.runSpecs, 1)
 	assert.Equal(t, []string{"stop", "run", "start"}, docker.events)
 	assert.Equal(t, []string{"/dev:/dev"}, docker.runSpecs[0].Binds)
+	assert.Equal(t, []string{"20"}, docker.runSpecs[0].GroupAdd)
+	assert.Equal(t, []pkgtypes.ContainerDevice{{
+		PathOnHost:        "/dev/ttyUSB0",
+		PathInContainer:   "/dev/ttyUSB0",
+		CgroupPermissions: "rwm",
+	}}, docker.runSpecs[0].Devices)
 	assert.True(t, docker.runSpecs[0].Privileged)
 	assert.Equal(t, gnssConfigApplyCommand, docker.runSpecs[0].Cmd[0])
 	assert.Contains(t, docker.runSpecs[0].Cmd, "--config-baud")

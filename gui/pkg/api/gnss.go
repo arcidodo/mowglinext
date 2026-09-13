@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -33,6 +34,7 @@ const (
 )
 
 var runGNSSRuntimeRegen = regenerateGNSSRuntimeConfigs
+var gnssSerialDeviceAccess = serialDeviceAccess
 
 var allowedGNSSBauds = map[string]bool{
 	"9600":   true,
@@ -134,7 +136,7 @@ func postGNSSPlan(dbProvider pkgtypes.IDBProvider, dockerProvider pkgtypes.IDock
 			return
 		}
 
-		execution, err := runGNSSTool(c.Request.Context(), dockerProvider, containerDetails, false, buildGNSSPlanCommand(cfg))
+	execution, err := runGNSSTool(c.Request.Context(), dockerProvider, containerDetails, false, "", buildGNSSPlanCommand(cfg))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
@@ -275,7 +277,7 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 		}
 	}
 
-	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, buildGNSSApplyCommand(cfg, cfg.Profile))
+	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile))
 	if err != nil {
 		return GNSSActionResponse{}, http.StatusInternalServerError, err
 	}
@@ -356,7 +358,7 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 		}
 	}
 
-	resetExecution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, buildGNSSApplyCommand(cfg, "factory_reset"))
+	resetExecution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, "factory_reset"))
 	if err != nil {
 		return GNSSActionResponse{}, http.StatusInternalServerError, err
 	}
@@ -370,7 +372,7 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 		return response, http.StatusOK, nil
 	}
 
-	applyExecution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, buildGNSSApplyCommand(cfg, cfg.Profile))
+	applyExecution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile))
 	if err != nil {
 		return GNSSActionResponse{}, http.StatusInternalServerError, err
 	}
@@ -427,7 +429,7 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 	return response, http.StatusOK, nil
 }
 
-func runGNSSTool(parentCtx context.Context, dockerProvider pkgtypes.IDockerProvider, containerDetails pkgtypes.ContainerDetails, needsSerial bool, command []string) (GNSSCommandExecution, error) {
+func runGNSSTool(parentCtx context.Context, dockerProvider pkgtypes.IDockerProvider, containerDetails pkgtypes.ContainerDetails, needsSerial bool, serialDevice string, command []string) (GNSSCommandExecution, error) {
 	ctx, cancel := context.WithTimeout(parentCtx, gnssRouteCommandTimeout)
 	defer cancel()
 
@@ -437,7 +439,17 @@ func runGNSSTool(parentCtx context.Context, dockerProvider pkgtypes.IDockerProvi
 		AutoRemove: true,
 	}
 	if needsSerial {
+		deviceGID, resolvedDevice, err := gnssSerialDeviceAccess(serialDevice)
+		if err != nil {
+			return GNSSCommandExecution{}, err
+		}
 		spec.Binds = []string{deviceBind(containerDetails.Binds)}
+		spec.Devices = []pkgtypes.ContainerDevice{{
+			PathOnHost:        resolvedDevice,
+			PathInContainer:   resolvedDevice,
+			CgroupPermissions: "rwm",
+		}}
+		spec.GroupAdd = []string{deviceGID}
 		spec.Privileged = containerDetails.Privileged
 	}
 
@@ -454,6 +466,22 @@ func runGNSSTool(parentCtx context.Context, dockerProvider pkgtypes.IDockerProvi
 		Stderr:   result.Stderr,
 		Success:  result.ExitCode == 0,
 	}, nil
+}
+
+func serialDeviceAccess(device string) (string, string, error) {
+	info, err := gnssPathStat(device)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot stat GNSS serial device %q: %w", device, err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		return "", "", fmt.Errorf("cannot determine group ID for GNSS serial device %q", device)
+	}
+	resolvedDevice, err := gnssPathEvalLink(device)
+	if err != nil {
+		return "", "", fmt.Errorf("cannot resolve GNSS serial device %q: %w", device, err)
+	}
+	return strconv.FormatUint(uint64(stat.Gid), 10), resolvedDevice, nil
 }
 
 func newGNSSActionResponse(action string, cfg gnssSavedConfig, containerDetails pkgtypes.ContainerDetails) GNSSActionResponse {
