@@ -144,8 +144,10 @@ func (i *DockerProvider) ContainerRun(ctx context.Context, spec types2.Container
 			Tty:          false,
 		},
 		&container.HostConfig{
-			Binds:      append([]string(nil), spec.Binds...),
-			Devices:    devices,
+			Binds: append([]string(nil), spec.Binds...),
+			Resources: container.Resources{
+				Devices: devices,
+			},
 			GroupAdd:   append([]string(nil), spec.GroupAdd...),
 			Privileged: spec.Privileged,
 			AutoRemove: spec.AutoRemove,
