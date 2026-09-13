@@ -165,12 +165,20 @@ func defaultGNSSYAMLWithSignalGroup(serialDevice string, receiverFamily string, 
 func newGNSSTestDB(t *testing.T, yamlContent string) (*pkgtypes.MockDBProvider, string) {
 	t.Helper()
 	stubGNSSDeviceInspection(t)
+	stubGNSSRuntimeRegen(t)
 	yamlFile := writeGNSSConfigFile(t, yamlContent)
 	envFile := createTempConfigFile(t, "ROS_DOMAIN_ID=0\n")
 	db := pkgtypes.NewMockDBProvider()
 	require.NoError(t, db.Set("system.mower.yamlConfigFile", []byte(yamlFile)))
 	require.NoError(t, db.Set("system.mower.runtimeEnvFile", []byte(envFile)))
 	return db, envFile
+}
+
+func stubGNSSRuntimeRegen(t *testing.T) {
+	t.Helper()
+	previous := runGNSSRuntimeRegen
+	runGNSSRuntimeRegen = func(context.Context) error { return nil }
+	t.Cleanup(func() { runGNSSRuntimeRegen = previous })
 }
 
 func defaultMockDocker() *mockDockerProvider {

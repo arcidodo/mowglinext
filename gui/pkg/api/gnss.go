@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -28,7 +29,10 @@ const (
 	gnssApplyTimeoutMs      = "5000"
 	gnssRouteCommandTimeout = 2 * time.Minute
 	gnssSettingsHeader      = "# Mowgli Robot Configuration — managed by mowglinext-gui\n# This file is the single source of truth for robot parameters.\n# Changes made here are picked up on container restart.\n\n"
+	gnssRuntimeConfigMount  = "/runtime_config"
 )
+
+var runGNSSRuntimeRegen = regenerateGNSSRuntimeConfigs
 
 var allowedGNSSBauds = map[string]bool{
 	"9600":   true,
@@ -225,8 +229,12 @@ func postGNSSRestart(dbProvider pkgtypes.IDBProvider, dockerProvider pkgtypes.ID
 			return
 		}
 
-		response := newGNSSActionResponse("restart", cfg, containerDetails)
+	response := newGNSSActionResponse("restart", cfg, containerDetails)
 		addGNSSConfigWarnings(&response, cfg, false)
+		if err := runGNSSRuntimeRegen(c.Request.Context()); err != nil {
+			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
+			return
+		}
 
 		actionErr := dockerProvider.ContainerStart(c.Request.Context(), containerDetails.ID)
 		if containerDetails.Running {
@@ -256,6 +264,9 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 
 	response := newGNSSActionResponse("apply", cfg, containerDetails)
 	addGNSSConfigWarnings(&response, cfg, true)
+	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
+		return GNSSActionResponse{}, http.StatusInternalServerError, err
+	}
 
 	if containerDetails.Running {
 		response.StopAttempted = true
@@ -296,6 +307,12 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 	}
 	response.RuntimeBaud = resolvedRuntimeBaud
 	response.RuntimeBaudDiffersFromConfig = resolvedRuntimeBaud != cfg.ConfigBaud
+	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
+		response.Success = false
+		response.PartialFailure = true
+		response.Message = "GNSS apply succeeded but runtime configuration regeneration failed"
+		return response, http.StatusOK, nil
+	}
 
 	if containerDetails.Running {
 		response.RestartAttempted = true
@@ -385,6 +402,12 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 	}
 	response.RuntimeBaud = resolvedRuntimeBaud
 	response.RuntimeBaudDiffersFromConfig = resolvedRuntimeBaud != cfg.ConfigBaud
+	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
+		response.Success = false
+		response.PartialFailure = true
+		response.Message = "Factory reset + apply succeeded but runtime configuration regeneration failed"
+		return response, http.StatusOK, nil
+	}
 
 	if containerDetails.Running {
 		response.RestartAttempted = true
@@ -624,6 +647,44 @@ func deviceBind(existingBinds []string) string {
 		}
 	}
 	return "/dev:/dev"
+}
+
+// regenerateGNSSRuntimeConfigs invokes the checkout's existing stack.sh regen
+// through the host init mount namespace. The GUI has /runtime_config bind-mounted
+// from the host's docker directory; mountinfo preserves that host source even
+// though the container sees it at a different mount point.
+func regenerateGNSSRuntimeConfigs(parentCtx context.Context) error {
+	dockerDir, err := hostBindSourceForMount(gnssRuntimeConfigMount)
+	if err != nil {
+		return fmt.Errorf("cannot locate the Mowgli runtime config bind: %w", err)
+	}
+	if filepath.Base(dockerDir) != "docker" {
+		return fmt.Errorf("unexpected Mowgli runtime config bind source %q", dockerDir)
+	}
+
+	stackScript := filepath.Join(filepath.Dir(dockerDir), "docker", "stack.sh")
+	ctx, cancel := context.WithTimeout(parentCtx, gnssRouteCommandTimeout)
+	defer cancel()
+	command := exec.CommandContext(ctx, "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", stackScript, "regen")
+	if output, err := command.CombinedOutput(); err != nil {
+		return fmt.Errorf("failed to regenerate GNSS runtime configuration: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func hostBindSourceForMount(mountPoint string) (string, error) {
+	content, err := os.ReadFile("/proc/self/mountinfo")
+	if err != nil {
+		return "", err
+	}
+	for _, line := range strings.Split(string(content), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 5 || fields[4] != mountPoint {
+			continue
+		}
+		return strings.ReplaceAll(fields[3], "\\040", " "), nil
+	}
+	return "", fmt.Errorf("mount point %s not found", mountPoint)
 }
 
 func loadSavedGNSSConfig(dbProvider pkgtypes.IDBProvider) (gnssSavedConfig, error) {
