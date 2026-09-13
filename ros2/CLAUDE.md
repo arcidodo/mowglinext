@@ -47,7 +47,7 @@ All of these assume the devcontainer (`/ros2_ws` exists, sourced ROS Kilted), ru
 ```bash
 make build                     # = build-full: colcon build --symlink-install, Release
 make build-pkg PKG=mowgli_behavior          # --packages-up-to; PACKAGES_MODE=select for just that one
-make build-dev                 # mowgli_interfaces mowgli_localization universal_gnss_ros2 mowgli_bringup
+make build-dev                 # mowgli_interfaces mowgli_localization universal_gnss_msgs mowgli_bringup
 make build-debug               # BUILD_TYPE=Debug ; make clean removes build/ install/ log/
 make test                      # colcon test + colcon test-result --verbose (needs install/setup.bash)
 PACKAGES="mowgli_hardware" ./scripts/test.sh      # single package

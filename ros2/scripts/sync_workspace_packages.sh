@@ -74,13 +74,13 @@ find_universal_gnss_repo() {
     for candidate in "${candidates[@]}"; do
         [ -n "${candidate}" ] || continue
 
-        if [ -f "${candidate}/gnss_ros2/package.xml" ]; then
+        if [ -f "${candidate}/universal_gnss_msgs/package.xml" ]; then
             printf '%s\n' "${candidate}"
             return 0
         fi
 
         if [ -d "${candidate}" ]; then
-            warn "Universal GNSS source candidate exists at ${candidate}, but gnss_ros2/package.xml was not found."
+            warn "Universal GNSS source candidate exists at ${candidate}, but universal_gnss_msgs/package.xml was not found."
         fi
     done
 
@@ -181,15 +181,15 @@ if [ -f "${MONOREPO_ROOT}/tools/motor/package.xml" ]; then
 fi
 
 if universal_gnss_repo="$(find_universal_gnss_repo)"; then
-    universal_gnss_ros2_dir="${universal_gnss_repo}/gnss_ros2"
-    universal_gnss_ros2_xml="${universal_gnss_ros2_dir}/package.xml"
-    universal_pkg_name="$(package_name_from_xml "${universal_gnss_ros2_xml}")"
-    if [ "${universal_pkg_name}" != "universal_gnss_ros2" ]; then
-        warn "Universal GNSS package name mismatch at ${universal_gnss_ros2_xml}: ${universal_pkg_name}"
+    universal_gnss_msgs_dir="${universal_gnss_repo}/universal_gnss_msgs"
+    universal_gnss_msgs_xml="${universal_gnss_msgs_dir}/package.xml"
+    universal_pkg_name="$(package_name_from_xml "${universal_gnss_msgs_xml}")"
+    if [ "${universal_pkg_name}" != "universal_gnss_msgs" ]; then
+        warn "Universal GNSS package name mismatch at ${universal_gnss_msgs_xml}: ${universal_pkg_name}"
         exit 1
     fi
 
-    link_workspace_package "${universal_gnss_ros2_dir}" "${universal_pkg_name}"
+    link_workspace_package "${universal_gnss_msgs_dir}" "${universal_pkg_name}"
 else
     warn "Universal GNSS source not found. Checked vendored submodule at ${VENDORED_UNIVERSAL_GNSS_PATH} and fallback mount at ${LEGACY_MOUNTED_UNIVERSAL_GNSS_PATH}${UNIVERSAL_GNSS_PATH:+, plus UNIVERSAL_GNSS_PATH=${UNIVERSAL_GNSS_PATH}}."
 fi

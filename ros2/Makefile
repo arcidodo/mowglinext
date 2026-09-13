@@ -6,7 +6,7 @@ DOCKER_IMAGE  ?= mowgli-ros2
 DOCKER_TAG    ?= latest
 ROBOT_HOST    ?= mowgli.local
 ROBOT_USER    ?= pi
-DEV_PACKAGES  ?= mowgli_interfaces mowgli_localization universal_gnss_ros2 mowgli_bringup
+DEV_PACKAGES  ?= mowgli_interfaces mowgli_localization universal_gnss_msgs mowgli_bringup
 
 
 .PHONY: help build build-dev build-full build-debug build-pkg test clean \

@@ -62,11 +62,11 @@ fi
 echo "Resolving rosdep dependencies..."
 ROSDEP_SKIP_KEYS=()
 
-# universal_gnss_ros2 normally comes from the vendored submodule linked by
+# universal_gnss_msgs normally comes from the vendored submodule linked by
 # sync_workspace_packages.sh. If that submodule or an override checkout is
 # absent, keep rosdep from trying to resolve it as a system package.
-if [ ! -f "/ros2_ws/src/universal_gnss_ros2/package.xml" ]; then
-    ROSDEP_SKIP_KEYS+=(universal_gnss_ros2)
+if [ ! -f "/ros2_ws/src/universal_gnss_msgs/package.xml" ]; then
+    ROSDEP_SKIP_KEYS+=(universal_gnss_msgs)
 fi
 
 rosdep_args=(
@@ -87,7 +87,7 @@ rosdep "${rosdep_args[@]}" || true
 # ---------------------------------------------------------------------------
 # Optional focused development build.
 # ---------------------------------------------------------------------------
-DEV_PACKAGES="${DEV_PACKAGES:-mowgli_interfaces mowgli_localization universal_gnss_ros2 mowgli_bringup}"
+DEV_PACKAGES="${DEV_PACKAGES:-mowgli_interfaces mowgli_localization universal_gnss_msgs mowgli_bringup}"
 MOWGLI_POST_CREATE_BUILD="${MOWGLI_POST_CREATE_BUILD:-0}"
 
 if [ "${MOWGLI_POST_CREATE_BUILD}" = "1" ]; then

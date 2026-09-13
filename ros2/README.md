@@ -427,12 +427,11 @@ colcon build \
 source install/setup.bash
 ```
 
-`universal_gnss_ros2` is vendored via the
+`universal_gnss_msgs` is vendored as the interface-only dependency via the
 `ros2/src/external/universal-gnss` git submodule, not installed via apt. The
-main `mowgli-ros2` runtime no longer launches Universal GNSS directly; the
-`mowgli-gps` sidecar owns that runtime path. The vendored package remains in
-this workspace during the migration so ROS2 CI and local development can stay
-in sync with the sidecar code until the final cleanup PR removes it.
+main `mowgli-ros2` runtime does not launch Universal GNSS directly; the
+`mowgli-gps` sidecar owns that runtime path. Workspace synchronization and the
+Docker build expose only `universal_gnss_msgs`, never the UG runtime packages.
 
 The sidecar package under `tools/motor/` is linked or copied into the colcon
 workspace as `mowgli_tools` and built into the `mowgli-ros2` runtime image.

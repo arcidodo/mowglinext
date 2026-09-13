@@ -24,7 +24,7 @@ find_package(builtin_interfaces REQUIRED)
 find_package(diagnostic_msgs REQUIRED)
 find_package(rtcm_msgs REQUIRED)
 find_package(mowgli_interfaces REQUIRED)
-find_package(universal_gnss_ros2 REQUIRED)
+find_package(universal_gnss_msgs REQUIRED)
 
 # ---------------------------------------------------------------------------
 # Library: mowgli_gnss_bridge_lib
@@ -48,7 +48,7 @@ ament_target_dependencies(mowgli_gnss_bridge_lib
   diagnostic_msgs
   rtcm_msgs
   mowgli_interfaces
-  universal_gnss_ros2
+  universal_gnss_msgs
 )
 
 # ---------------------------------------------------------------------------
@@ -110,7 +110,7 @@ if(BUILD_TESTING)
   ament_target_dependencies(test_universal_gnss_topic_bridge
     rclcpp
     mowgli_interfaces
-    universal_gnss_ros2
+    universal_gnss_msgs
     diagnostic_msgs
     rtcm_msgs
   )

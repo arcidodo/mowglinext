@@ -330,11 +330,11 @@ COPY ros2/src/mowgli_coverage/CMakeLists.txt   src/mowgli_coverage/CMakeLists.tx
 # consumed by mowgli_coverage). Pulled by checkout submodules: recursive.
 COPY ros2/src/opennav_coverage/opennav_coverage_msgs/package.xml    src/opennav_coverage/opennav_coverage_msgs/package.xml
 COPY ros2/src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt src/opennav_coverage/opennav_coverage_msgs/CMakeLists.txt
-# universal-gnss is vendored as a git submodule under ros2/src/external.
-# gnss_ros2 is the only colcon package; its sibling gnss_* libraries are
-# plain CMake subdirectories pulled in at build time from the same repo root.
-COPY ros2/src/external/universal-gnss/gnss_ros2/package.xml    src/external/universal-gnss/gnss_ros2/package.xml
-COPY ros2/src/external/universal-gnss/gnss_ros2/CMakeLists.txt src/external/universal-gnss/gnss_ros2/CMakeLists.txt
+# universal-gnss is vendored as a git submodule under ros2/src/external, but
+# mowgli-ros2 consumes only its public interface package. Receiver, NTRIP,
+# replay, transport, driver and tool targets stay exclusively in mowgli-gps.
+COPY ros2/src/external/universal-gnss/universal_gnss_msgs/package.xml    src/universal_gnss_msgs/package.xml
+COPY ros2/src/external/universal-gnss/universal_gnss_msgs/CMakeLists.txt src/universal_gnss_msgs/CMakeLists.txt
 # The bridge runs in mowgli-ros2 and only adapts DDS message contracts. It
 # does not belong to the external receiver/NTRIP image.
 COPY sensors/gps/mowgli_gnss_bridge/package.xml    src/mowgli_gnss_bridge/package.xml
@@ -372,29 +372,49 @@ RUN /bin/bash -c "\
     "
 
 # =============================================================================
-# Stage 4: build
+# Stage 4: build-ug-interfaces
+# Build only Universal GNSS's public ROS interfaces. Keeping its source at an
+# explicit base path prevents colcon from discovering the full UG repository.
+# =============================================================================
+FROM build-interfaces AS build-ug-interfaces
+
+COPY ros2/src/external/universal-gnss/universal_gnss_msgs/ src/universal_gnss_msgs/
+
+RUN /bin/bash -c "\
+    source /opt/ros/kilted/setup.bash && \
+    source install/setup.bash && \
+    colcon build \
+      --base-paths src/universal_gnss_msgs \
+      --packages-select universal_gnss_msgs \
+      --cmake-args -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF \
+      --parallel-workers \$(nproc) \
+    "
+
+# =============================================================================
+# Stage 5: build
 # Compiles all remaining workspace packages from source.
 # =============================================================================
-FROM build-interfaces AS build
+FROM build-ug-interfaces AS build
 
 ARG BUILD_TYPE=Release
 
-# Now copy the rest of the source tree plus the sidecar tools package
-COPY ros2/src/ src/
+# Copy only the Mowgli package roots consumed by this image. In particular,
+# never copy ros2/src/external: the UG submodule contributes only the
+# universal_gnss_msgs package already copied in build-ug-interfaces.
+COPY ros2/src/fusion_graph/ src/fusion_graph/
+COPY ros2/src/mowgli_behavior/ src/mowgli_behavior/
+COPY ros2/src/mowgli_bringup/ src/mowgli_bringup/
+COPY ros2/src/mowgli_coverage/ src/mowgli_coverage/
+COPY ros2/src/mowgli_hardware/ src/mowgli_hardware/
+COPY ros2/src/mowgli_leds/ src/mowgli_leds/
+COPY ros2/src/mowgli_localization/ src/mowgli_localization/
+COPY ros2/src/mowgli_map/ src/mowgli_map/
+COPY ros2/src/mowgli_monitoring/ src/mowgli_monitoring/
+COPY ros2/src/mowgli_nav2_plugins/ src/mowgli_nav2_plugins/
+COPY ros2/src/mowgli_simulation/ src/mowgli_simulation/
+COPY ros2/src/opennav_coverage/opennav_coverage_msgs/ src/opennav_coverage/opennav_coverage_msgs/
 COPY tools/motor/ src/mowgli_tools/
 COPY sensors/gps/mowgli_gnss_bridge/ src/mowgli_gnss_bridge/
-
-# Skip every opennav_coverage subpackage except _msgs. The upstream server
-# is pinned to F2C 1.2.1 (no TrapezoidalDecomp / generateHeadlandSwaths /
-# planPathForConnection); we use mowgli_coverage with F2C 2.0 instead, and
-# only need the action types from opennav_coverage_msgs. Marker files
-# aren't tracked in the submodule, so create them here.
-RUN touch \
-      src/opennav_coverage/opennav_coverage/COLCON_IGNORE \
-      src/opennav_coverage/opennav_coverage_bt/COLCON_IGNORE \
-      src/opennav_coverage/opennav_coverage_demo/COLCON_IGNORE \
-      src/opennav_coverage/opennav_coverage_navigator/COLCON_IGNORE \
-      src/opennav_coverage/opennav_row_coverage/COLCON_IGNORE
 
 RUN /bin/bash -c "\
     f2c_config=\$(find /opt/fields2cover-300 -type f \( -name 'Fields2CoverConfig.cmake' -o -name 'fields2cover-config.cmake' \) | head -n 1) && \
@@ -402,13 +422,19 @@ RUN /bin/bash -c "\
     echo \"Fields2Cover config: \${f2c_config}\" \
     "
 
-# Build all packages (mowgli_interfaces is already built and cached)
+# Build all Mowgli packages. The explicit top-level base paths deliberately
+# exclude src/external, so no Universal GNSS runtime package can be discovered.
+# mowgli_interfaces and universal_gnss_msgs were built in dedicated stages.
 RUN /bin/bash -c "\
     source /opt/ros/kilted/setup.bash && \
     source install/setup.bash && \
     export CMAKE_PREFIX_PATH=/opt/fields2cover-300:/opt/gtsam:\${CMAKE_PREFIX_PATH:-} && \
     export MAKEFLAGS=-j3 && \
+    mapfile -t mowgli_base_paths < <(find src -mindepth 1 -maxdepth 1 \
+      -type d ! -name external -print | sort) && \
     colcon build \
+      --base-paths \"\${mowgli_base_paths[@]}\" \
+      --packages-skip mowgli_interfaces universal_gnss_msgs \
       --cmake-args -DCMAKE_BUILD_TYPE=${BUILD_TYPE} -DBUILD_TESTING=OFF \
       --parallel-workers 2 \
       --event-handlers console_cohesion+ \
@@ -418,13 +444,17 @@ RUN /bin/bash -c "\
 RUN /bin/bash -c "\
     source /opt/ros/kilted/setup.bash && \
     source install/setup.bash && \
+    mapfile -t mowgli_base_paths < <(find src -mindepth 1 -maxdepth 1 \
+      -type d ! -name external -print | sort) && \
     colcon test \
+      --base-paths \"\${mowgli_base_paths[@]}\" \
+      --packages-skip mowgli_interfaces universal_gnss_msgs \
       --ctest-args -L 'gtest' --output-on-failure \
     ; colcon test-result --verbose \
     " || true
 
 # =============================================================================
-# Stage 5: runtime
+# Stage 6: runtime
 # Minimal image containing only what is needed to run the robot.
 # =============================================================================
 FROM base AS runtime

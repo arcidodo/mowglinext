@@ -6,7 +6,7 @@
 | Task | Start here |
 |------|------------|
 | Build the workspace (devcontainer) | `ros2/Makefile` `build-full` / `build-pkg PKG=x` / `build-dev` → `ros2/scripts/build.sh` (env `BUILD_TYPE`, `PACKAGES`, `PACKAGES_MODE=up-to\|select`, L51-83) |
-| Control which package roots colcon sees | `ros2/scripts/sync_workspace_packages.sh` — globs `ros2/src/mowgli_*/` (L129), links `fusion_graph` (L175-177), `tools/motor` as `mowgli_tools` (L179-180), `opennav_coverage_msgs`, `universal_gnss_ros2`; `--print-base-paths` feeds build/test |
+| Control which package roots colcon sees | `ros2/scripts/sync_workspace_packages.sh` — globs `ros2/src/mowgli_*/`, links `fusion_graph`, `tools/motor` as `mowgli_tools`, `opennav_coverage_msgs`, and only `universal_gnss_msgs`; `--print-base-paths` feeds build/test |
 | Run unit tests | `make test` → `ros2/scripts/test.sh` (`PACKAGES` env; requires `/ros2_ws/install/setup.bash`) |
 | Run headless Webots sim / E2E | `ros2/Makefile` `sim` (L81), `e2e-test` (L91), `e2e-test-no-lidar` (L111); harnesses `ros2/src/e2e_test.py`, `ros2/src/e2e_test_no_lidar.py` |
 | Sim will not start ("Failed to find a free participant", Webots IPC socket) | `ros2/scripts/sim-stop.sh` — SIGINT `ros2 launch`, kills Webots + node stragglers, wipes `/dev/shm/cyclone*`, `/tmp/webots/*` (L60-64) |
@@ -91,7 +91,7 @@
 | Target | Does |
 |--------|------|
 | `build` / `build-full` | `./scripts/build.sh` (Release), whole linked workspace |
-| `build-dev` | `PACKAGES="$(DEV_PACKAGES)"` = `mowgli_interfaces mowgli_localization universal_gnss_ros2 mowgli_bringup` |
+| `build-dev` | `PACKAGES="$(DEV_PACKAGES)"` = `mowgli_interfaces mowgli_localization universal_gnss_msgs mowgli_bringup` |
 | `build-pkg PKG=x` / `build-debug` | single package (`--packages-up-to` unless `PACKAGES_MODE=select`) / `BUILD_TYPE=Debug` |
 | `test` / `clean` | `./scripts/test.sh` / `rm -rf build/ install/ log/` |
 | `sim-stop` | `scripts/sim-stop.sh` |
@@ -201,7 +201,7 @@ docker compose -f docker/docker-compose.simulation.yaml up dev-sim   # then: exe
 - `sync_workspace_packages.sh` refuses to overwrite a non-symlink entry in `/ros2_ws/src` (L101-104); CI's `ln -s ../../tools/motor src/mowgli_tools` and the script's `mowgli_tools` link are the same package under two mechanisms.
 - `opennav_coverage` COLCON_IGNORE markers are **untracked** files created at sync/build/CI time (`touch`), never committed (unforked submodule) — a fresh checkout without running the sync script or Dockerfile will try to compile the F2C-1.2.1 server packages and fail. Even with `INCLUDE_OPENNAV_COVERAGE_STACK=1` they are source-inspection only.
 - No in-tree package depends on `opennav_coverage_msgs` any more (`mowgli_coverage/package.xml` deps L17-28 → `mowgli_interfaces`; coverage action is `mowgli_interfaces/action/PlanCoverage`, CLAUDE.md Invariant 7). The submodule is still linked, COPYed and built (sync L135-138, Dockerfile L331-332) purely by inertia.
-- `universal-gnss` is pinned to the `mowglinext` fork branch `main` (gitlink `ab32f673`) per `.gitmodules`; only `gnss_ros2/` is a colcon package (`universal_gnss_ros2`), the `gnss_*` siblings are plain CMake subdirs pulled in at build. `UNIVERSAL_GNSS_PATH` overrides the vendored copy; legacy `/workspaces/universal-gnss` is only the fallback tried after it (sync L35-37, L65-72). The runtime stack does not launch it (`full_system.launch.py --show-args` must not list `use_universal_gnss`, asserted in CI and the Docker smoke test); the `mowgli-gps` sidecar owns GNSS.
+- `universal-gnss` is pinned to commit `b459e3e8bcc1a92fe352b961102244905e79ad9a` on `Pepeuch/universal-gnss` `dev`. Mowgli links and builds only `universal_gnss_msgs/`; `gnss_ros2/` and all `gnss_*` runtime libraries remain outside the Mowgli workspace and image. `UNIVERSAL_GNSS_PATH` overrides the vendored copy; legacy `/workspaces/universal-gnss` is only the fallback. The `mowgli-gps` sidecar owns the complete UG runtime.
 - Dockerfile `build` stage runs `colcon test … || true` (L412-419) — image builds never fail on unit tests; the gate is `ros2-ci.yml`.
 - `ros2/CPPLINT.cfg` `set noparent` applies to `ros2/` only; cpplint is run by `make lint`, not by CI.
 

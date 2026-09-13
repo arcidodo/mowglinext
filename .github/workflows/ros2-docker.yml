@@ -114,6 +114,21 @@ jobs:
             ros2 pkg prefix mowgli_bringup
             ros2 pkg prefix mowgli_tools
             ros2 pkg prefix mowgli_gnss_bridge
+            ros2 pkg prefix universal_gnss_msgs
+            test -z "$(ros2 pkg executables universal_gnss_msgs)"
+            test "$(ros2 pkg executables mowgli_gnss_bridge)" = \
+              "mowgli_gnss_bridge universal_gnss_topic_bridge"
+            if ros2 pkg prefix universal_gnss_ros2 >/dev/null 2>&1; then
+              echo "unexpected Universal GNSS runtime package in mowgli-ros2" >&2
+              exit 1
+            fi
+            for executable in receiver_node ntrip_node replay_node; do
+              if find /ros2_ws/install -type f -name "$executable" -perm /111 \
+                   -print -quit | grep -q .; then
+                echo "unexpected Universal GNSS runtime executable: $executable" >&2
+                exit 1
+              fi
+            done
             ros2 run mowgli_tools tune_drive_pid --help > /tmp/mowgli_tools_help.txt
             grep -q "Controlled drive PID tuning" /tmp/mowgli_tools_help.txt
             ros2 launch mowgli_bringup full_system.launch.py --show-args \
