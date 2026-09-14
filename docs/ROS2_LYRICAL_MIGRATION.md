@@ -45,7 +45,7 @@ Les seuls correctifs appliqués à Fields2Cover sont des inclusions standard man
 
 | Dépendance | Révision |
 |---|---|
-| GTSAM | `4.3a1`, source, TBB désactivé comme avant migration |
+| GTSAM | `4.3a1`, source, TBB désactivé comme avant migration, `-Wno-error=array-bounds` (voir CI) |
 | Fields2Cover | `884d895b59192882476e986ba44ea9143a06a6a9`, v3, `/opt/fields2cover-300` |
 | grid_map | `7ae24725d7effa0c22a23524b91b46bada5b2728` |
 | Beluga | `22adc90e08cc7229cde042a756f044b908600fed` |
@@ -76,6 +76,17 @@ L'utilisateur `ubuntu` conserve l'accès au groupe `dialout` ; les opérations s
 Le nom du contrôle protégé **`Build & Test (ROS2 kilted)` reste volontairement
 identique** pour éviter de bloquer les PR sur `dev`. Il compile désormais Lyrical
 sur `ubuntu-26.04`. Son nom historique n'indique plus la distribution testée.
+
+Ce runner est la variante Ubuntu `amd64v3` : son GCC 15 cible `x86-64-v3` (AVX2)
+par défaut, sans aucun `-march` de notre part. À ce niveau d'ISA, GCC 15 émet un
+faux positif `-Warray-bounds` sur les chargements AVX d'Eigen (vecteurs de taille
+fixe dans `EssentialMatrix.cpp` / `FundamentalMatrix.cpp`), que le `-Werror`
+codé en dur de GTSAM 4.3a1 transforme en échec de compilation. Les trois recettes
+GTSAM (`ros2-ci.yml`, `ros2/Dockerfile`, `.devcontainer/Dockerfile`) passent donc
+`-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds`. L'image `ros:lyrical-ros-base` amd64
+de base et les constructions arm64 n'activent jamais AVX : le flag y est inerte et
+n'existe que pour garder les recettes identiques. Ce défaut n'était pas
+reproductible localement, même en AMD64 émulé, pour cette raison.
 
 ## Construire et vérifier
 

@@ -22,6 +22,13 @@ RUN --mount=type=cache,id=mowgli-vendor-lyrical-${TARGETARCH},target=/tmp/lyrica
 #
 # Install lands in /opt/gtsam; runtime stages COPY it across, set up
 # ldconfig, and export CMAKE_PREFIX_PATH so find_package(GTSAM) works.
+#
+# -Wno-error=array-bounds mirrors .github/workflows/ros2-ci.yml (same recipe,
+# keep in lockstep): GTSAM 4.3a1 hardcodes -Werror, and on the GitHub
+# `ubuntu-26.04` runner (Ubuntu `amd64v3` variant, GCC 15 targeting x86-64-v3
+# by default) GCC 15 emits a false-positive -Warray-bounds on Eigen's AVX
+# loads of fixed-size vectors. This baseline-amd64/arm64 image never enables
+# AVX, so the flag is inert here.
 # =============================================================================
 FROM ros:lyrical-ros-base AS gtsam-builder
 ARG TARGETARCH
@@ -47,6 +54,7 @@ RUN --mount=type=cache,id=mowgli-gtsam-lyrical-4.3a1-${TARGETARCH},target=/tmp/g
       -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_USE_SYSTEM_METIS=ON \
       -DGTSAM_WITH_TBB=OFF -DGTSAM_WITH_EIGEN_MKL=OFF \
       -DGTSAM_INSTALL_MATLAB_TOOLBOX=OFF -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds \
  && cmake --build /tmp/gtsam/build --parallel 3 \
  && cmake --install /tmp/gtsam/build
 

@@ -33,6 +33,10 @@
 # ---------------------------------------------------------------------------
 ARG BASE_IMAGE=ros:lyrical-ros-base
 
+# -Wno-error=array-bounds below mirrors ros2/Dockerfile + ros2-ci.yml (same
+# GTSAM recipe, keep in lockstep): GCC 15 on an x86-64-v3 default toolchain
+# (GitHub's amd64v3 `ubuntu-26.04` runner) trips a false-positive
+# -Warray-bounds in Eigen's AVX loads, and GTSAM 4.3a1 hardcodes -Werror.
 FROM ros:lyrical-ros-base AS gtsam-builder
 ARG TARGETARCH
 
@@ -57,6 +61,7 @@ RUN --mount=type=cache,id=mowgli-gtsam-lyrical-4.3a1-${TARGETARCH},target=/tmp/g
       -DGTSAM_USE_SYSTEM_EIGEN=ON -DGTSAM_USE_SYSTEM_METIS=ON \
       -DGTSAM_WITH_TBB=OFF -DGTSAM_WITH_EIGEN_MKL=OFF \
       -DGTSAM_INSTALL_MATLAB_TOOLBOX=OFF -DBUILD_SHARED_LIBS=ON \
+      -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds \
  && cmake --build /tmp/gtsam/build --parallel 3 \
  && cmake --install /tmp/gtsam/build
 

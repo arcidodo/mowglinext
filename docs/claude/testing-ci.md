@@ -67,7 +67,7 @@ Two more piles of test files exist but **never execute**: the 62 CTest suites in
 ### Version pins that must move together
 
 - **clang-format 18** — `ros2-ci.yml:419` installs `clang-format-18`; `ros2/scripts/format.sh:12` sets `REQUIRED_MAJOR=18` but only **warns** on a mismatch. A locally-installed clang-format 19+/22 reformats files CI never asked about.
-- **GTSAM 4.3a1** — `ros2-ci.yml:191` cache key `gtsam-4.3a1-…` ↔ `ros2/Dockerfile` stage 0 ↔ `.devcontainer/Dockerfile`. The Ubuntu apt 4.2 package ships a broken `GTSAMConfig.cmake` and the legacy custom-factor API.
+- **GTSAM 4.3a1** — `ros2-ci.yml` cache key `gtsam-4.3a1-…-noerr-array-bounds` ↔ `ros2/Dockerfile` stage 0 ↔ `.devcontainer/Dockerfile`. The Ubuntu apt 4.2 package ships a broken `GTSAMConfig.cmake` and the legacy custom-factor API. All three recipes pass `-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds`: the `ubuntu-26.04` runner is Ubuntu's `amd64v3` variant (GCC 15 defaults to x86-64-v3/AVX2) and GCC 15 false-positives `-Warray-bounds` in Eigen's AVX loads, which GTSAM's hardcoded `-Werror` turns fatal. Bump the cache key whenever the cmake flags change.
 - **Fields2Cover v3 @ `884d895b59192882476e986ba44ea9143a06a6a9`** → `/opt/fields2cover-300`; `ros2-ci.yml:245` cache key `f2c-3.0.0-884d895-…` ↔ `ros2/Dockerfile` ↔ `mowgli_coverage/CMakeLists.txt`'s `find_package(Fields2Cover 3.0.0 … PATHS /opt/fields2cover-300)`.
 - **Node 22** — `gui-ci.yml:45–50` ↔ `gui/Dockerfile` web build stage.
 

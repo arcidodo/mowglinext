@@ -187,12 +187,25 @@ jobs:
       # custom-factor API, so the Docker image build (ros2/Dockerfile stage 0)
       # builds 4.3a1 from source and lands it under /opt/gtsam. We mirror the
       # same recipe here, cached so subsequent runs are instant.
+      #
+      # -Wno-error=array-bounds: GTSAM 4.3a1 hardcodes -Werror. The GitHub
+      # `ubuntu-26.04` runner is Ubuntu's `amd64v3` variant, so its GCC 15
+      # targets x86-64-v3 (AVX2) by default — with NO -march flag from us
+      # ("Build for native architecture: Disabled" in the configure summary).
+      # At that ISA level GCC 15 emits a false-positive -Warray-bounds on
+      # Eigen's AVX ploadu() of fixed-size Vector3/Matrix13 temporaries
+      # (EssentialMatrix.cpp / FundamentalMatrix.cpp), which -Werror turns
+      # into a hard build failure. The baseline-amd64 ros:lyrical-ros-base
+      # image (and every arm64 build) never enables AVX, so the Docker
+      # recipe only carries the flag to stay in lockstep with this one. Keep
+      # the flag in `-Wno-error=` form — a bare -Wno-error would be
+      # overridden by GTSAM's later target-level -Werror.
       - name: Cache GTSAM build
         id: cache-gtsam
         uses: actions/cache@v4
         with:
           path: /opt/gtsam
-          key: gtsam-4.3a1-${{ runner.os }}-resolute-lyrical
+          key: gtsam-4.3a1-${{ runner.os }}-resolute-lyrical-noerr-array-bounds
 
       - name: Build GTSAM 4.3a1 from source
         working-directory: .
@@ -219,7 +232,8 @@ jobs:
             -DGTSAM_WITH_TBB=OFF \
             -DGTSAM_WITH_EIGEN_MKL=OFF \
             -DGTSAM_INSTALL_MATLAB_TOOLBOX=OFF \
-            -DBUILD_SHARED_LIBS=ON
+            -DBUILD_SHARED_LIBS=ON \
+            -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds
           sudo mkdir -p /opt/gtsam
           sudo chown "$(id -u):$(id -g)" /opt/gtsam
           make -j$(nproc) install
