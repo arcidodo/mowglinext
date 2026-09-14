@@ -55,8 +55,14 @@ cmake --build "$work/sophus-build" --parallel "${BUILD_JOBS:-3}"
 cmake --install "$work/sophus-build"
 export CMAKE_PREFIX_PATH="$prefix:${CMAKE_PREFIX_PATH:-}"
 cd "$work"
+# -Wno-error=array-bounds: grid_map_cmake_helpers adds -Werror to every grid_map
+# package. On GitHub's `ubuntu-26.04` runner (Ubuntu amd64v3 variant, GCC 15
+# defaulting to x86-64-v3/AVX2) GCC 15 emits a false-positive -Warray-bounds on
+# Eigen's AVX loads of fixed-size vectors (grid_map::Position in GridMap.cpp),
+# same as the GTSAM recipe in ros2-ci.yml. Inert on baseline amd64 and arm64.
+# The `-Wno-error=` form is order-independent w.r.t. the later -Werror.
 MAKEFLAGS="-j${BUILD_JOBS:-3}" colcon build --merge-install --install-base "$prefix" \
   --base-paths src/grid_map src/beluga/beluga src/beluga/beluga_ros src/navigation2/nav2_smac_planner \
   --packages-up-to grid_map_ros beluga_ros nav2_smac_planner --parallel-workers 2 \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 -DBUILD_TESTING=OFF \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds

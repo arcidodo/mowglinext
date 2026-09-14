@@ -83,7 +83,9 @@ faux positif `-Warray-bounds` sur les chargements AVX d'Eigen (vecteurs de taill
 fixe dans `EssentialMatrix.cpp` / `FundamentalMatrix.cpp`), que le `-Werror`
 codé en dur de GTSAM 4.3a1 transforme en échec de compilation. Les trois recettes
 GTSAM (`ros2-ci.yml`, `ros2/Dockerfile`, `.devcontainer/Dockerfile`) passent donc
-`-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds`. L'image `ros:lyrical-ros-base` amd64
+`-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds`, et `ros2/scripts/build_lyrical_vendor.sh`
+fait de même pour grid_map (`grid_map_cmake_helpers` impose `-Werror` ; même faux
+positif sur `grid_map::Position` dans `GridMap.cpp`). L'image `ros:lyrical-ros-base` amd64
 de base et les constructions arm64 n'activent jamais AVX : le flag y est inerte et
 n'existe que pour garder les recettes identiques. Ce défaut n'était pas
 reproductible localement, même en AMD64 émulé, pour cette raison.
