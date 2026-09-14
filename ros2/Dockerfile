@@ -439,6 +439,7 @@ RUN --mount=type=cache,id=mowgli-ros2-lyrical-${TARGETARCH},target=/home/ubuntu/
 # Minimal image containing only what is needed to run the robot.
 # =============================================================================
 FROM base AS runtime
+LABEL garden.mowgli.maintenance-api="1"
 
 WORKDIR /ros2_ws
 
