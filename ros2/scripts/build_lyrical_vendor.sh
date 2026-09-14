@@ -55,14 +55,23 @@ cmake --build "$work/sophus-build" --parallel "${BUILD_JOBS:-3}"
 cmake --install "$work/sophus-build"
 export CMAKE_PREFIX_PATH="$prefix:${CMAKE_PREFIX_PATH:-}"
 cd "$work"
-# -Wno-error=array-bounds: grid_map_cmake_helpers adds -Werror to every grid_map
-# package. On GitHub's `ubuntu-26.04` runner (Ubuntu amd64v3 variant, GCC 15
-# defaulting to x86-64-v3/AVX2) GCC 15 emits a false-positive -Warray-bounds on
-# Eigen's AVX loads of fixed-size vectors (grid_map::Position in GridMap.cpp),
-# same as the GTSAM recipe in ros2-ci.yml. Inert on baseline amd64 and arm64.
-# The `-Wno-error=` form is order-independent w.r.t. the later -Werror.
+# GitHub's `ubuntu-26.04` runner is Ubuntu's amd64v3 variant: GCC 15 targets
+# x86-64-v3 (AVX2) by default, which turns on Eigen code paths that GCC 15 +
+# Eigen 3.4.0 do not compile warning-free, and grid_map (grid_map_cmake_helpers)
+# and Nav2 (nav2_package) hardcode -Werror. Inert on baseline amd64 and arm64.
+#  * -Wno-error=array-bounds: middle-end false positive on Eigen's AVX loads of
+#    fixed-size vectors (grid_map::Position in GridMap.cpp); NOT suppressed by
+#    system-header status. Same flag as the GTSAM recipe in ros2-ci.yml. The
+#    `-Wno-error=` form is order-independent w.r.t. the later -Werror.
+#  * -isystem /usr/include/eigen3: nav2_smac_planner reaches Eigen through OMPL
+#    with a plain -I, so front-end warnings inside Eigen itself become errors
+#    (F32ToBf16's unused `r` under EIGEN_VECTORIZE_AVX2, AVX/PacketMath.h:1275).
+#    GCC de-duplicates -I against -isystem by directory identity, so this marks
+#    Eigen a system header everywhere in the vendor build — exactly what
+#    grid_map already gets through its SYSTEM include export.
 MAKEFLAGS="-j${BUILD_JOBS:-3}" colcon build --merge-install --install-base "$prefix" \
   --base-paths src/grid_map src/beluga/beluga src/beluga/beluga_ros src/navigation2/nav2_smac_planner \
   --packages-up-to grid_map_ros beluga_ros nav2_smac_planner --parallel-workers 2 \
   --cmake-args -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_STANDARD=20 -DBUILD_TESTING=OFF \
-  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 -DCMAKE_CXX_FLAGS=-Wno-error=array-bounds
+  -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+  "-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds -isystem /usr/include/eigen3"

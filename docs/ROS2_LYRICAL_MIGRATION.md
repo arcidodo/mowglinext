@@ -85,7 +85,11 @@ codé en dur de GTSAM 4.3a1 transforme en échec de compilation. Les trois recet
 GTSAM (`ros2-ci.yml`, `ros2/Dockerfile`, `.devcontainer/Dockerfile`) passent donc
 `-DCMAKE_CXX_FLAGS=-Wno-error=array-bounds`, et `ros2/scripts/build_lyrical_vendor.sh`
 fait de même pour grid_map (`grid_map_cmake_helpers` impose `-Werror` ; même faux
-positif sur `grid_map::Position` dans `GridMap.cpp`). L'image `ros:lyrical-ros-base` amd64
+positif sur `grid_map::Position` dans `GridMap.cpp`) en ajoutant
+`-isystem /usr/include/eigen3` : `nav2_smac_planner` (`-Werror` via `nav2_package`)
+atteint Eigen à travers OMPL avec un simple `-I`, et sous `EIGEN_VECTORIZE_AVX2`
+Eigen 3.4.0 lui-même n'est pas exempt d'avertissements (`F32ToBf16`, variable `r`
+inutilisée). Traiter Eigen comme en-tête système les neutralise toutes d'un coup. L'image `ros:lyrical-ros-base` amd64
 de base et les constructions arm64 n'activent jamais AVX : le flag y est inerte et
 n'existe que pour garder les recettes identiques. Ce défaut n'était pas
 reproductible localement, même en AMD64 émulé, pour cette raison.
