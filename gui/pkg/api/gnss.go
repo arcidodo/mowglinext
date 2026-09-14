@@ -88,6 +88,9 @@ type GNSSActionResponse struct {
 	SerialDevice                 string                 `json:"serial_device,omitempty"`
 	ExecutionBaud                string                 `json:"execution_baud,omitempty"`
 	DetectedBaud                 string                 `json:"detected_baud,omitempty"`
+	TargetBaud                   string                 `json:"target_baud,omitempty"`
+	ActiveVerifiedBaud           string                 `json:"active_verified_baud,omitempty"`
+	ManualBaudRequired           bool                   `json:"manual_baud_required,omitempty"`
 	RuntimeBaud                  string                 `json:"runtime_baud,omitempty"`
 	ConfigBaud                   string                 `json:"config_baud,omitempty"`
 	RuntimeBaudDiffersFromConfig bool                   `json:"runtime_baud_differs_from_config"`
@@ -277,11 +280,39 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 		}
 	}
 
-	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile))
+	detection, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSDetectCommand(cfg))
 	if err != nil {
 		return GNSSActionResponse{}, http.StatusInternalServerError, err
 	}
-	response.Executions = []GNSSCommandExecution{execution}
+	response.Executions = []GNSSCommandExecution{detection}
+	response.Success = detection.Success
+	detectionReport := applyGNSSCommandReport(&response, detection.Stdout)
+	if !detection.Success || detectionReport.DetectedBaud == "" {
+		manualBaud := normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud)
+		if manualBaud == gnssBaudAuto {
+			response.ManualBaudRequired = true
+			response.Message = "GNSS baud autodetection failed; select the current baud manually and retry"
+			return response, http.StatusOK, nil
+		}
+
+		manualDetection, runErr := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSDetectCommand(cfg, manualBaud))
+		if runErr != nil {
+			return GNSSActionResponse{}, http.StatusInternalServerError, runErr
+		}
+		response.Executions = append(response.Executions, manualDetection)
+		response.Success = manualDetection.Success
+		detectionReport = applyGNSSCommandReport(&response, manualDetection.Stdout)
+		if !manualDetection.Success || detectionReport.DetectedBaud == "" {
+			response.Message = "The selected current baud was not validated by VERSIONA"
+			return response, http.StatusOK, nil
+		}
+	}
+
+	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile, detectionReport.DetectedBaud))
+	if err != nil {
+		return GNSSActionResponse{}, http.StatusInternalServerError, err
+	}
+	response.Executions = append(response.Executions, execution)
 	response.Success = execution.Success
 	report := applyGNSSCommandReport(&response, execution.Stdout)
 	if !execution.Success {
@@ -291,9 +322,12 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 		return response, http.StatusOK, nil
 	}
 
-	resolvedRuntimeBaud := cfg.ConfigBaud
-	if report.TransportBaud != "" {
-		resolvedRuntimeBaud = report.TransportBaud
+	resolvedRuntimeBaud := report.ActiveVerifiedBaud
+	if resolvedRuntimeBaud == "" {
+		response.Success = false
+		response.PartialFailure = true
+		response.Message = "GNSS apply completed without a verified active baud"
+		return response, http.StatusOK, nil
 	}
 
 	if cfg.RuntimeBaud != resolvedRuntimeBaud {
@@ -506,6 +540,7 @@ func newGNSSActionResponse(action string, cfg gnssSavedConfig, containerDetails 
 		ExecutionBaud:                normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud),
 		RuntimeBaud:                  cfg.RuntimeBaud,
 		ConfigBaud:                   cfg.ConfigBaud,
+		TargetBaud:                   cfg.ConfigBaud,
 		RuntimeBaudDiffersFromConfig: cfg.RuntimeBaud != cfg.ConfigBaud,
 		GPSContainer:                 containerDetails.Name,
 		GPSImage:                     containerDetails.Image,
@@ -517,7 +552,7 @@ func addGNSSConfigWarnings(response *GNSSActionResponse, cfg gnssSavedConfig, li
 	if cfg.RuntimeBaud != cfg.ConfigBaud {
 		warning := "Configured receiver baud differs from runtime baud."
 		if liveApply {
-			warning += " After a successful apply, the backend will persist whichever baud Universal GNSS reports as still live. That is usually the configured baud, but Unicore runtime-only apply may keep the previously detected baud active until a save/reboot workflow makes the new baud live."
+			warning += " Apply will first detect and verify the current baud, request the target baud, and persist only the active baud Universal GNSS verifies after configuration."
 		} else {
 			warning += " A live apply will re-check which baud is actually live before restarting mowgli-gps."
 		}
@@ -580,12 +615,39 @@ func buildGNSSPlanCommand(cfg gnssSavedConfig) []string {
 	return command
 }
 
-func buildGNSSApplyCommand(cfg gnssSavedConfig, profile string) []string {
+func buildGNSSDetectCommand(cfg gnssSavedConfig, manualBaud ...string) []string {
+	baud := gnssBaudAuto
+	if len(manualBaud) > 0 && strings.TrimSpace(manualBaud[0]) != "" {
+		baud = manualBaud[0]
+	}
+	command := []string{
+		gnssConfigApplyCommand, "--json",
+		"--family", cfg.ReceiverFamily,
+		"--device", cfg.SerialDevice,
+		"--baud", baud,
+		"--profile", "runtime_only",
+		"--apply-mode", "dry-run",
+	}
+	if baud == gnssBaudAuto {
+		if probeBauds := buildGNSSProbeBaudCandidates(cfg); len(probeBauds) > 0 {
+			command = append(command, "--probe-bauds", strings.Join(probeBauds, ","))
+		}
+	}
+	if cfg.ReceiverModel != "" {
+		command = append(command, "--model", cfg.ReceiverModel)
+	}
+	return command
+}
+
+func buildGNSSApplyCommand(cfg gnssSavedConfig, profile string, verifiedCurrentBaud ...string) []string {
 	applyMode := gnssApplyModeRuntime
 	if canonicalProfile, ok := canonicalGNSSProfile(profile); ok && canonicalProfile == "factory_reset" {
 		applyMode = gnssApplyModeFactory
 	}
 	executionBaud := normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud)
+	if len(verifiedCurrentBaud) > 0 && strings.TrimSpace(verifiedCurrentBaud[0]) != "" {
+		executionBaud = verifiedCurrentBaud[0]
+	}
 
 	command := []string{
 		gnssConfigApplyCommand,
@@ -829,7 +891,10 @@ type gnssToolJSONOutput struct {
 		Baud any `json:"baud"`
 	} `json:"discovery"`
 	Transport struct {
-		Baud any `json:"baud"`
+		Baud               any `json:"baud"`
+		CurrentBaud        any `json:"current_baud"`
+		TargetBaud         any `json:"target_baud"`
+		ActiveVerifiedBaud any `json:"active_verified_baud"`
 	} `json:"transport"`
 	ExecutionSummary struct {
 		FinalStatus string `json:"final_status"`
@@ -837,11 +902,14 @@ type gnssToolJSONOutput struct {
 }
 
 type gnssToolReport struct {
-	Warnings      []string
-	ErrorMessage  string
-	FinalStatus   string
-	DetectedBaud  string
-	TransportBaud string
+	Warnings           []string
+	ErrorMessage       string
+	FinalStatus        string
+	DetectedBaud       string
+	TransportBaud      string
+	CurrentBaud        string
+	TargetBaud         string
+	ActiveVerifiedBaud string
 }
 
 func extractGNSSReport(stdout string) gnssToolReport {
@@ -864,11 +932,14 @@ func extractGNSSReport(stdout string) gnssToolReport {
 		warnings = append(warnings, normalized)
 	}
 	return gnssToolReport{
-		Warnings:      warnings,
-		ErrorMessage:  strings.TrimSpace(output.ErrorMessage),
-		FinalStatus:   strings.TrimSpace(output.ExecutionSummary.FinalStatus),
-		DetectedBaud:  normalizeGNSSReportBaud(output.Discovery.Baud),
-		TransportBaud: normalizeGNSSReportBaud(output.Transport.Baud),
+		Warnings:           warnings,
+		ErrorMessage:       strings.TrimSpace(output.ErrorMessage),
+		FinalStatus:        strings.TrimSpace(output.ExecutionSummary.FinalStatus),
+		DetectedBaud:       normalizeGNSSReportBaud(output.Discovery.Baud),
+		TransportBaud:      normalizeGNSSReportBaud(output.Transport.Baud),
+		CurrentBaud:        normalizeGNSSReportBaud(output.Transport.CurrentBaud),
+		TargetBaud:         normalizeGNSSReportBaud(output.Transport.TargetBaud),
+		ActiveVerifiedBaud: normalizeGNSSReportBaud(output.Transport.ActiveVerifiedBaud),
 	}
 }
 
@@ -883,6 +954,14 @@ func applyGNSSCommandReport(response *GNSSActionResponse, stdout string) gnssToo
 	if report.TransportBaud != "" {
 		response.RuntimeBaud = report.TransportBaud
 		response.RuntimeBaudDiffersFromConfig = report.TransportBaud != response.ConfigBaud
+	}
+	if report.TargetBaud != "" {
+		response.TargetBaud = report.TargetBaud
+	}
+	if report.ActiveVerifiedBaud != "" {
+		response.ActiveVerifiedBaud = report.ActiveVerifiedBaud
+		response.RuntimeBaud = report.ActiveVerifiedBaud
+		response.RuntimeBaudDiffersFromConfig = report.ActiveVerifiedBaud != response.ConfigBaud
 	}
 	if !response.Success && report.ErrorMessage != "" {
 		switch report.FinalStatus {

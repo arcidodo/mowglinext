@@ -152,6 +152,13 @@ else
   assert_contains "MAVROS sidecar receives its NTRIP-disabled config copy" \
     "./docker/config/mavros:/ros2_ws/config:ro" "$MAVROS_FRAGMENT_CONTENT"
 
+  MAVROS_ROBOT_YAML="$(cat "$MAVROS_REPO/docker/config/mowgli/mowgli_robot.yaml")"
+  MAVROS_UG_PARAMETERS="$(cat "$MAVROS_REPO/docker/config/universal_gnss/parameters.yaml")"
+  assert_contains "Universal GNSS target baud stays in canonical Mowgli YAML under MAVROS" \
+    "gnss_config_baud:" "$MAVROS_ROBOT_YAML"
+  assert_contains "Universal GNSS sidecar baud is generated independently of HARDWARE_BACKEND" \
+    "serial_baud:" "$MAVROS_UG_PARAMETERS"
+
   MAVROS_ENV_CONTENT="$(cat "$MAVROS_REPO/docker/.env")"
   assert_contains "MAVROS image ignores MowgliNext IMAGE_TAG" \
     "MAVROS_IMAGE=ghcr.io/pepeuch/mowglimavros/mowgli-mavros-sidecar:kilted@sha256:04e4eb17b0f5ce38f882f68346b1694774fa87e1945b38b57c94f90da34dd560" \

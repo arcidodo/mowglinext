@@ -1111,6 +1111,7 @@ load_existing_config() {
   PREV_GNSS_TRANSPORT="$(existing_yaml_value gnss_transport "$yaml_file")"
   PREV_GNSS_SERIAL_DEVICE="$(existing_yaml_value gnss_serial_device "$yaml_file")"
   PREV_GNSS_SERIAL_BAUD="$(existing_yaml_value gnss_serial_baud "$yaml_file")"
+  PREV_GNSS_CONFIG_BAUD="$(existing_yaml_value gnss_config_baud "$yaml_file")"
   PREV_GNSS_FRAME_ID="$(existing_yaml_value gnss_frame_id "$yaml_file")"
   PREV_GNSS_NTRIP_GGA_ENABLED="$(existing_yaml_value gnss_ntrip_gga_enabled "$yaml_file")"
   PREV_GNSS_NTRIP_GGA_INTERVAL_S="$(existing_yaml_value gnss_ntrip_gga_interval_s "$yaml_file")"
@@ -1429,7 +1430,7 @@ write_config() {
   local yaml_file="$DOCKER_DIR/config/mowgli/mowgli_robot.yaml"
   local template="$INSTALL_DIR/config/mowgli/mowgli_robot.yaml"
   local resolved_receiver_family resolved_transport resolved_serial_device
-  local resolved_serial_baud resolved_frame_id resolved_ntrip_enabled
+  local resolved_serial_baud resolved_config_baud resolved_frame_id resolved_ntrip_enabled
   local resolved_ntrip_host resolved_ntrip_port resolved_ntrip_user
   local resolved_ntrip_password resolved_ntrip_mountpoint
   local resolved_ntrip_gga_enabled resolved_ntrip_gga_interval_s
@@ -1476,6 +1477,7 @@ EOF
   resolved_serial_baud="$(preserved_gnss_value \
     "$(if gnss_installer_key_is_explicit GNSS_SERIAL_BAUD; then printf 'true'; else printf 'false'; fi)" \
     "${GNSS_SERIAL_BAUD}" "${PREV_GNSS_SERIAL_BAUD:-}" "921600")"
+  resolved_config_baud="${PREV_GNSS_CONFIG_BAUD:-$resolved_serial_baud}"
   resolved_frame_id="$(preserved_gnss_value \
     "$(if gnss_installer_key_is_explicit GNSS_FRAME_ID; then printf 'true'; else printf 'false'; fi)" \
     "${GNSS_FRAME_ID}" "${PREV_GNSS_FRAME_ID:-}" "gps_link")"
@@ -1505,6 +1507,7 @@ EOF
   _yaml_patch_key "$yaml_file" gnss_transport "\"$resolved_transport\""
   _yaml_patch_key "$yaml_file" gnss_serial_device "\"$resolved_serial_device\""
   _yaml_patch_key "$yaml_file" gnss_serial_baud "$resolved_serial_baud"
+  _yaml_patch_key "$yaml_file" gnss_config_baud "$resolved_config_baud"
   _yaml_patch_key "$yaml_file" gnss_frame_id "\"$resolved_frame_id\""
   _yaml_patch_key "$yaml_file" ntrip_enabled   "$resolved_ntrip_enabled"
   _yaml_patch_key "$yaml_file" ntrip_host      "\"$resolved_ntrip_host\""
