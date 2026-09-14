@@ -1,0 +1,773 @@
+--- a/gui/asserts/mower_config.schema.json
++++ b/gui/asserts/mower_config.schema.json
+@@ -330,6 +330,13 @@
+           "default": 921600,
+           "description": "Persisted target baud for future receiver-side profile application."
+         },
++        "gnss_execution_baud": {
++          "type": "string",
++          "title": "Manual Current Baud Fallback",
++          "enum": ["auto", "115200", "230400", "460800", "921600"],
++          "default": "auto",
++          "description": "Auto by default. A manual current baud is used only after autodetection fails and is validated by Universal GNSS before apply."
++        },
+         "gnss_signal_group": {
+           "type": "string",
+           "title": "Raw Signal Group",
+--- a/gui/pkg/api/gnss.go
++++ b/gui/pkg/api/gnss.go
+@@ -87,6 +87,9 @@
+ 	SerialDevice                 string                 `json:"serial_device,omitempty"`
+ 	ExecutionBaud                string                 `json:"execution_baud,omitempty"`
+ 	DetectedBaud                 string                 `json:"detected_baud,omitempty"`
++	TargetBaud                   string                 `json:"target_baud,omitempty"`
++	ActiveVerifiedBaud           string                 `json:"active_verified_baud,omitempty"`
++	ManualBaudRequired           bool                   `json:"manual_baud_required,omitempty"`
+ 	RuntimeBaud                  string                 `json:"runtime_baud,omitempty"`
+ 	ConfigBaud                   string                 `json:"config_baud,omitempty"`
+ 	RuntimeBaudDiffersFromConfig bool                   `json:"runtime_baud_differs_from_config"`
+@@ -277,11 +280,39 @@
+ 		}
+ 	}
+ 
+-	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile))
++	detection, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSDetectCommand(cfg))
+ 	if err != nil {
+ 		return GNSSActionResponse{}, http.StatusInternalServerError, err
+ 	}
+-	response.Executions = []GNSSCommandExecution{execution}
++	response.Executions = []GNSSCommandExecution{detection}
++	response.Success = detection.Success
++	detectionReport := applyGNSSCommandReport(&response, detection.Stdout)
++	if !detection.Success || detectionReport.DetectedBaud == "" {
++		manualBaud := normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud)
++		if manualBaud == gnssBaudAuto {
++			response.ManualBaudRequired = true
++			response.Message = "GNSS baud autodetection failed; select the current baud manually and retry"
++			return response, http.StatusOK, nil
++		}
++
++		manualDetection, runErr := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSDetectCommand(cfg, manualBaud))
++		if runErr != nil {
++			return GNSSActionResponse{}, http.StatusInternalServerError, runErr
++		}
++		response.Executions = append(response.Executions, manualDetection)
++		response.Success = manualDetection.Success
++		detectionReport = applyGNSSCommandReport(&response, manualDetection.Stdout)
++		if !manualDetection.Success || detectionReport.DetectedBaud == "" {
++			response.Message = "The selected current baud was not validated by VERSIONA"
++			return response, http.StatusOK, nil
++		}
++	}
++
++	execution, err := runGNSSTool(parentCtx, dockerProvider, containerDetails, true, cfg.SerialDevice, buildGNSSApplyCommand(cfg, cfg.Profile, detectionReport.DetectedBaud))
++	if err != nil {
++		return GNSSActionResponse{}, http.StatusInternalServerError, err
++	}
++	response.Executions = append(response.Executions, execution)
+ 	response.Success = execution.Success
+ 	report := applyGNSSCommandReport(&response, execution.Stdout)
+ 	if !execution.Success {
+@@ -291,9 +322,12 @@
+ 		return response, http.StatusOK, nil
+ 	}
+ 
+-	resolvedRuntimeBaud := cfg.ConfigBaud
+-	if report.TransportBaud != "" {
+-		resolvedRuntimeBaud = report.TransportBaud
++	resolvedRuntimeBaud := report.ActiveVerifiedBaud
++	if resolvedRuntimeBaud == "" {
++		response.Success = false
++		response.PartialFailure = true
++		response.Message = "GNSS apply completed without a verified active baud"
++		return response, http.StatusOK, nil
+ 	}
+ 
+ 	if cfg.RuntimeBaud != resolvedRuntimeBaud {
+@@ -495,6 +529,7 @@
+ 		ExecutionBaud:                normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud),
+ 		RuntimeBaud:                  cfg.RuntimeBaud,
+ 		ConfigBaud:                   cfg.ConfigBaud,
++		TargetBaud:                   cfg.ConfigBaud,
+ 		RuntimeBaudDiffersFromConfig: cfg.RuntimeBaud != cfg.ConfigBaud,
+ 		GPSContainer:                 containerDetails.Name,
+ 		GPSImage:                     containerDetails.Image,
+@@ -506,7 +541,7 @@
+ 	if cfg.RuntimeBaud != cfg.ConfigBaud {
+ 		warning := "Configured receiver baud differs from runtime baud."
+ 		if liveApply {
+-			warning += " After a successful apply, the backend will persist whichever baud Universal GNSS reports as still live. That is usually the configured baud, but Unicore runtime-only apply may keep the previously detected baud active until a save/reboot workflow makes the new baud live."
++			warning += " Apply will first detect and verify the current baud, request the target baud, and persist only the active baud Universal GNSS verifies after configuration."
+ 		} else {
+ 			warning += " A live apply will re-check which baud is actually live before restarting mowgli-gps."
+ 		}
+@@ -569,12 +604,39 @@
+ 	return command
+ }
+ 
+-func buildGNSSApplyCommand(cfg gnssSavedConfig, profile string) []string {
++func buildGNSSDetectCommand(cfg gnssSavedConfig, manualBaud ...string) []string {
++	baud := gnssBaudAuto
++	if len(manualBaud) > 0 && strings.TrimSpace(manualBaud[0]) != "" {
++		baud = manualBaud[0]
++	}
++	command := []string{
++		gnssConfigApplyCommand, "--json",
++		"--family", cfg.ReceiverFamily,
++		"--device", cfg.SerialDevice,
++		"--baud", baud,
++		"--profile", "runtime_only",
++		"--apply-mode", "dry-run",
++	}
++	if baud == gnssBaudAuto {
++		if probeBauds := buildGNSSProbeBaudCandidates(cfg); len(probeBauds) > 0 {
++			command = append(command, "--probe-bauds", strings.Join(probeBauds, ","))
++		}
++	}
++	if cfg.ReceiverModel != "" {
++		command = append(command, "--model", cfg.ReceiverModel)
++	}
++	return command
++}
++
++func buildGNSSApplyCommand(cfg gnssSavedConfig, profile string, verifiedCurrentBaud ...string) []string {
+ 	applyMode := gnssApplyModeRuntime
+ 	if canonicalProfile, ok := canonicalGNSSProfile(profile); ok && canonicalProfile == "factory_reset" {
+ 		applyMode = gnssApplyModeFactory
+ 	}
+ 	executionBaud := normalizeGNSSExecutionBaudDisplay(cfg.ExecutionBaud)
++	if len(verifiedCurrentBaud) > 0 && strings.TrimSpace(verifiedCurrentBaud[0]) != "" {
++		executionBaud = verifiedCurrentBaud[0]
++	}
+ 
+ 	command := []string{
+ 		gnssConfigApplyCommand,
+@@ -810,7 +872,10 @@
+ 		Baud any `json:"baud"`
+ 	} `json:"discovery"`
+ 	Transport struct {
+-		Baud any `json:"baud"`
++		Baud               any `json:"baud"`
++		CurrentBaud        any `json:"current_baud"`
++		TargetBaud         any `json:"target_baud"`
++		ActiveVerifiedBaud any `json:"active_verified_baud"`
+ 	} `json:"transport"`
+ 	ExecutionSummary struct {
+ 		FinalStatus string `json:"final_status"`
+@@ -823,6 +888,9 @@
+ 	FinalStatus   string
+ 	DetectedBaud  string
+ 	TransportBaud string
++	CurrentBaud string
++	TargetBaud string
++	ActiveVerifiedBaud string
+ }
+ 
+ func extractGNSSReport(stdout string) gnssToolReport {
+@@ -850,6 +918,9 @@
+ 		FinalStatus:   strings.TrimSpace(output.ExecutionSummary.FinalStatus),
+ 		DetectedBaud:  normalizeGNSSReportBaud(output.Discovery.Baud),
+ 		TransportBaud: normalizeGNSSReportBaud(output.Transport.Baud),
++		CurrentBaud: normalizeGNSSReportBaud(output.Transport.CurrentBaud),
++		TargetBaud: normalizeGNSSReportBaud(output.Transport.TargetBaud),
++		ActiveVerifiedBaud: normalizeGNSSReportBaud(output.Transport.ActiveVerifiedBaud),
+ 	}
+ }
+ 
+@@ -865,6 +936,14 @@
+ 		response.RuntimeBaud = report.TransportBaud
+ 		response.RuntimeBaudDiffersFromConfig = report.TransportBaud != response.ConfigBaud
+ 	}
++	if report.TargetBaud != "" {
++		response.TargetBaud = report.TargetBaud
++	}
++	if report.ActiveVerifiedBaud != "" {
++		response.ActiveVerifiedBaud = report.ActiveVerifiedBaud
++		response.RuntimeBaud = report.ActiveVerifiedBaud
++		response.RuntimeBaudDiffersFromConfig = report.ActiveVerifiedBaud != response.ConfigBaud
++	}
+ 	if !response.Success && report.ErrorMessage != "" {
+ 		switch report.FinalStatus {
+ 		case "":
+--- a/gui/pkg/api/gnss_test.go
++++ b/gui/pkg/api/gnss_test.go
+@@ -332,10 +332,10 @@
+ func TestGNSSApply_PassesConfigBaudAndRestartsAfterSuccess(t *testing.T) {
+ 	db, envFile := newGNSSTestDB(t, defaultGNSSYAML("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision"))
+ 	docker := defaultMockDocker()
+-	docker.runResults = []pkgtypes.ContainerRunResult{{
+-		ExitCode: 0,
+-		Stdout:   `{"status":"ok","warnings":["Universal GNSS skipped documented model-specific signal groups because no receiver model was selected."]}`,
+-	}}
++	docker.runResults = []pkgtypes.ContainerRunResult{
++		{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"discovery":{"baud":921600},"transport":{"current_baud":921600},"execution_summary":{"final_status":"dry_run"}}`},
++		{ExitCode: 0, Stdout: `{"status":"ok","warnings":["Universal GNSS skipped documented model-specific signal groups because no receiver model was selected."],"discovery":{"baud":921600},"transport":{"current_baud":921600,"target_baud":460800,"active_verified_baud":460800},"execution_summary":{"final_status":"ok"}}`},
++	}
+ 	router := setupGNSSRouter(db, docker)
+ 
+ 	w := httptest.NewRecorder()
+@@ -346,8 +346,8 @@
+ 	require.Equal(t, http.StatusOK, w.Code)
+ 	require.Len(t, docker.stopCalls, 1)
+ 	require.Len(t, docker.startCalls, 1)
+-	require.Len(t, docker.runSpecs, 1)
+-	assert.Equal(t, []string{"stop", "run", "start"}, docker.events)
++	require.Len(t, docker.runSpecs, 2)
++	assert.Equal(t, []string{"stop", "run", "run", "start"}, docker.events)
+ 	assert.Equal(t, []string{"/dev:/dev"}, docker.runSpecs[0].Binds)
+ 	assert.Equal(t, []string{"20"}, docker.runSpecs[0].GroupAdd)
+ 	assert.Equal(t, []pkgtypes.ContainerDevice{{
+@@ -357,25 +357,26 @@
+ 	}}, docker.runSpecs[0].Devices)
+ 	assert.True(t, docker.runSpecs[0].Privileged)
+ 	assert.Equal(t, gnssConfigApplyCommand, docker.runSpecs[0].Cmd[0])
+-	assert.Contains(t, docker.runSpecs[0].Cmd, "--config-baud")
+-	assert.Contains(t, docker.runSpecs[0].Cmd, "460800")
++	assert.NotContains(t, docker.runSpecs[0].Cmd, "--config-baud")
++	assert.Contains(t, docker.runSpecs[1].Cmd, "--config-baud")
++	assert.Contains(t, docker.runSpecs[1].Cmd, "460800")
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, "--device")
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0")
+ 
+-	assert.Contains(t, docker.runSpecs[0].Cmd, "--apply-mode")
+-	assert.Contains(t, docker.runSpecs[0].Cmd, gnssApplyModeRuntime)
++	assert.Contains(t, docker.runSpecs[1].Cmd, "--apply-mode")
++	assert.Contains(t, docker.runSpecs[1].Cmd, gnssApplyModeRuntime)
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, "--baud")
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, gnssBaudAuto)
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, "--probe-bauds")
+ 	assert.Contains(t, docker.runSpecs[0].Cmd, "921600,460800,115200,230400")
+-	assert.Contains(t, docker.runSpecs[0].Cmd, "--signal-profile")
+-	assert.Contains(t, docker.runSpecs[0].Cmd, "balanced")
++	assert.Contains(t, docker.runSpecs[1].Cmd, "--signal-profile")
++	assert.Contains(t, docker.runSpecs[1].Cmd, "balanced")
+ 
+ 	assert.NotContains(t, docker.runSpecs[0].Cmd, "persistent")
+-	assert.NotContains(t, docker.runSpecs[0].Cmd, gnssApplyModeFactory)
+-	assert.NotContains(t, docker.runSpecs[0].Cmd, "--model")
+-	assert.NotContains(t, docker.runSpecs[0].Cmd, "--signal-group")
+-	assert.NotContains(t, strings.Join(docker.runSpecs[0].Cmd, " "), "SIGNALGROUP")
++	assert.NotContains(t, docker.runSpecs[1].Cmd, gnssApplyModeFactory)
++	assert.NotContains(t, docker.runSpecs[1].Cmd, "--model")
++	assert.NotContains(t, docker.runSpecs[1].Cmd, "--signal-group")
++	assert.NotContains(t, strings.Join(docker.runSpecs[1].Cmd, " "), "SIGNALGROUP")
+ 
+ 	envContent, err := os.ReadFile(envFile)
+ 	require.NoError(t, err)
+@@ -453,7 +454,10 @@
+ 				"    gnss_signal_group: \"2 0\"\n"
+ 			db, _ := newGNSSTestDB(t, yaml)
+ 			docker := defaultMockDocker()
+-			docker.runResults = []pkgtypes.ContainerRunResult{{ExitCode: 0, Stdout: `{"status":"ok","warnings":[]}`}}
++			docker.runResults = []pkgtypes.ContainerRunResult{
++				{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"discovery":{"baud":921600},"transport":{"current_baud":921600}}`},
++				{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"transport":{"active_verified_baud":460800}}`},
++			}
+ 			router := setupGNSSRouter(db, docker)
+ 
+ 			w := httptest.NewRecorder()
+@@ -462,15 +466,15 @@
+ 			router.ServeHTTP(w, req)
+ 
+ 			require.Equal(t, http.StatusOK, w.Code)
+-			require.Len(t, docker.runSpecs, 1)
+-			assert.Contains(t, docker.runSpecs[0].Cmd, "--model")
+-			assert.Contains(t, docker.runSpecs[0].Cmd, receiverModel)
+-			assert.Contains(t, docker.runSpecs[0].Cmd, "--apply-mode")
+-			assert.Contains(t, docker.runSpecs[0].Cmd, gnssApplyModeRuntime)
+-			assert.NotContains(t, docker.runSpecs[0].Cmd, "persistent")
+-			assert.NotContains(t, docker.runSpecs[0].Cmd, gnssApplyModeFactory)
+-			assert.Contains(t, docker.runSpecs[0].Cmd, "--signal-group")
+-			assert.Contains(t, docker.runSpecs[0].Cmd, "2 0")
++			require.Len(t, docker.runSpecs, 2)
++			assert.Contains(t, docker.runSpecs[1].Cmd, "--model")
++			assert.Contains(t, docker.runSpecs[1].Cmd, receiverModel)
++			assert.Contains(t, docker.runSpecs[1].Cmd, "--apply-mode")
++			assert.Contains(t, docker.runSpecs[1].Cmd, gnssApplyModeRuntime)
++			assert.NotContains(t, docker.runSpecs[1].Cmd, "persistent")
++			assert.NotContains(t, docker.runSpecs[1].Cmd, gnssApplyModeFactory)
++			assert.Contains(t, docker.runSpecs[1].Cmd, "--signal-group")
++			assert.Contains(t, docker.runSpecs[1].Cmd, "2 0")
+ 		})
+ 	}
+ }
+@@ -700,6 +704,32 @@
+ 	assert.NotContains(t, command, "--probe-bauds")
+ }
+ 
++func TestBuildGNSSDetectThenApplyCommandsKeepCurrentAndTargetBaudsSeparate(t *testing.T) {
++	cfg := gnssSavedConfig{
++		ReceiverFamily: "unicore",
++		ReceiverModel:  "UM982",
++		SerialDevice:   "/dev/ttyUSB7",
++		RuntimeBaud:    "115200",
++		ConfigBaud:     "460800",
++		ExecutionBaud:  gnssBaudAuto,
++		ProfileRateHz:  "5",
++	}
++
++	detect := buildGNSSDetectCommand(cfg)
++	manualDetect := buildGNSSDetectCommand(cfg, "115200")
++	apply := buildGNSSApplyCommand(cfg, "rover_high_precision", "115200")
++
++	assert.Contains(t, detect, gnssBaudAuto)
++	assert.Contains(t, detect, "--probe-bauds")
++	assert.Contains(t, manualDetect, "115200")
++	assert.NotContains(t, manualDetect, gnssBaudAuto)
++	assert.NotContains(t, manualDetect, "--probe-bauds")
++	assert.Contains(t, apply, "115200")
++	assert.Contains(t, apply, "460800")
++	assert.NotContains(t, apply, gnssBaudAuto)
++	assert.NotContains(t, apply, "--probe-bauds")
++}
++
+ func TestBuildGNSSCommands_SkipSignalGroupWhenEmpty(t *testing.T) {
+ 	cfg := gnssSavedConfig{
+ 		ReceiverFamily: "unicore",
+@@ -750,10 +780,10 @@
+ func TestGNSSApply_AutoExecutionBaudSurfacesDetectedBaudFromToolOutput(t *testing.T) {
+ 	db, _ := newGNSSTestDB(t, defaultGNSSYAMLWithModel("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision", "UM982"))
+ 	docker := defaultMockDocker()
+-	docker.runResults = []pkgtypes.ContainerRunResult{{
+-		ExitCode: 0,
+-		Stdout:   `{"status":"ok","warnings":[],"discovery":{"baud":115200},"transport":{"baud":460800},"execution_summary":{"final_status":"completed"}}`,
+-	}}
++	docker.runResults = []pkgtypes.ContainerRunResult{
++		{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"discovery":{"baud":115200},"transport":{"current_baud":115200,"target_baud":null,"active_verified_baud":null},"execution_summary":{"final_status":"dry_run"}}`},
++		{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"discovery":{"baud":115200},"transport":{"current_baud":115200,"target_baud":460800,"active_verified_baud":460800},"execution_summary":{"final_status":"ok"}}`},
++	}
+ 	router := setupGNSSRouter(db, docker)
+ 
+ 	w := httptest.NewRecorder()
+@@ -770,17 +800,45 @@
+ 	assert.Equal(t, "115200", response.DetectedBaud)
+ 	assert.Equal(t, "460800", response.RuntimeBaud)
+ 	assert.Equal(t, "460800", response.ConfigBaud)
++	assert.Equal(t, "460800", response.TargetBaud)
++	assert.Equal(t, "460800", response.ActiveVerifiedBaud)
+ 	assert.True(t, response.RuntimeBaudUpdated)
+ 	assert.False(t, response.RuntimeBaudDiffersFromConfig)
+ }
+ 
+-func TestGNSSApply_PersistsOldRuntimeBaudWhenUnicoreConfigBaudDoesNotBecomeLive(t *testing.T) {
++func TestGNSSApply_ValidatesManualCurrentBaudOnlyAfterAutodetectionFails(t *testing.T) {
++	yaml := defaultGNSSYAMLWithModel("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision", "UM982") +
++		"    gnss_execution_baud: \"115200\"\n"
++	db, _ := newGNSSTestDB(t, yaml)
++	docker := defaultMockDocker()
++	docker.runResults = []pkgtypes.ContainerRunResult{
++		{ExitCode: 1, Stdout: `{"status":"transport_unavailable","discovery":{"baud":null}}`},
++		{ExitCode: 0, Stdout: `{"status":"ok","discovery":{"baud":115200},"transport":{"current_baud":115200}}`},
++		{ExitCode: 0, Stdout: `{"status":"ok","transport":{"current_baud":115200,"target_baud":460800,"active_verified_baud":460800}}`},
++	}
++	router := setupGNSSRouter(db, docker)
++
++	w := httptest.NewRecorder()
++	req, _ := http.NewRequest("POST", "/api/settings/gnss/apply", bytes.NewReader([]byte(`{"confirm":true}`)))
++	req.Header.Set("Content-Type", "application/json")
++	router.ServeHTTP(w, req)
++
++	require.Equal(t, http.StatusOK, w.Code)
++	require.Len(t, docker.runSpecs, 3)
++	assert.Contains(t, docker.runSpecs[0].Cmd, gnssBaudAuto)
++	assert.Contains(t, docker.runSpecs[1].Cmd, "115200")
++	assert.NotContains(t, docker.runSpecs[1].Cmd, gnssBaudAuto)
++	assert.Contains(t, docker.runSpecs[2].Cmd, "115200")
++	assert.Contains(t, docker.runSpecs[2].Cmd, "460800")
++}
++
++func TestGNSSApply_RefusesUnverifiedTargetBaud(t *testing.T) {
+ 	db, envFile := newGNSSTestDB(t, defaultGNSSYAMLWithModel("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision", "UM980"))
+ 	docker := defaultMockDocker()
+-	docker.runResults = []pkgtypes.ContainerRunResult{{
+-		ExitCode: 0,
+-		Stdout:   `{"status":"ok","warnings":["configured baud 460800 bps did not become active live after CONFIG COM1; continuing at the previously detected 115200 bps transport until a persistent/save workflow or reboot makes the new baud active"],"discovery":{"baud":115200},"transport":{"baud":115200},"execution_summary":{"final_status":"completed"}}`,
+-	}}
++	docker.runResults = []pkgtypes.ContainerRunResult{
++		{ExitCode: 0, Stdout: `{"status":"ok","warnings":[],"discovery":{"baud":115200},"transport":{"current_baud":115200},"execution_summary":{"final_status":"dry_run"}}`},
++		{ExitCode: 1, Stdout: `{"status":"transport_unavailable","warnings":[],"discovery":{"baud":115200},"transport":{"current_baud":115200,"target_baud":460800,"active_verified_baud":null},"execution_summary":{"final_status":"transport_unavailable"},"error_message":"target did not answer VERSIONA"}`},
++	}
+ 	router := setupGNSSRouter(db, docker)
+ 
+ 	w := httptest.NewRecorder()
+@@ -792,18 +850,16 @@
+ 
+ 	envContent, err := os.ReadFile(envFile)
+ 	require.NoError(t, err)
+-	assert.Contains(t, string(envContent), "GNSS_SERIAL_BAUD=115200")
++	assert.NotContains(t, string(envContent), "GNSS_SERIAL_BAUD=460800")
+ 
+ 	var response GNSSActionResponse
+ 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+-	assert.True(t, response.Success)
++	assert.False(t, response.Success)
+ 	assert.Equal(t, gnssBaudAuto, response.ExecutionBaud)
+ 	assert.Equal(t, "115200", response.DetectedBaud)
+-	assert.Equal(t, "115200", response.RuntimeBaud)
+ 	assert.Equal(t, "460800", response.ConfigBaud)
+-	assert.True(t, response.RuntimeBaudUpdated)
+-	assert.True(t, response.RuntimeBaudDiffersFromConfig)
+-	assert.Contains(t, strings.Join(response.Warnings, "\n"), "did not become active live")
++	assert.False(t, response.RuntimeBaudUpdated)
++	assert.Empty(t, response.ActiveVerifiedBaud)
+ }
+ 
+ func TestGNSSRuntimeConfigEndpoint_ReportsSourcesAndDetectedDevices(t *testing.T) {
+@@ -959,7 +1015,10 @@
+ func TestGNSSApply_RestartFailureIsReportedAsPartialFailure(t *testing.T) {
+ 	db, _ := newGNSSTestDB(t, defaultGNSSYAML("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision"))
+ 	docker := defaultMockDocker()
+-	docker.runResults = []pkgtypes.ContainerRunResult{{ExitCode: 0, Stdout: "apply ok"}}
++	docker.runResults = []pkgtypes.ContainerRunResult{
++		{ExitCode: 0, Stdout: `{"status":"ok","discovery":{"baud":921600},"transport":{"current_baud":921600}}`},
++		{ExitCode: 0, Stdout: `{"status":"ok","transport":{"active_verified_baud":460800}}`},
++	}
+ 	docker.startErr = assert.AnError
+ 	router := setupGNSSRouter(db, docker)
+ 
+@@ -969,7 +1028,7 @@
+ 	router.ServeHTTP(w, req)
+ 
+ 	require.Equal(t, http.StatusOK, w.Code)
+-	assert.Equal(t, []string{"stop", "run", "start"}, docker.events)
++	assert.Equal(t, []string{"stop", "run", "run", "start"}, docker.events)
+ 
+ 	var response GNSSActionResponse
+ 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))
+--- a/gui/web/src/components/settings/GnssReceiverActionsCard.test.tsx
++++ b/gui/web/src/components/settings/GnssReceiverActionsCard.test.tsx
+@@ -122,14 +122,16 @@
+         expect(failureMessages.length).toBeGreaterThan(0);
+     });
+ 
+-    it("renders execution, detected, runtime, and target baud fields separately", async () => {
++    it("renders detected, target, and verified active baud fields separately", async () => {
+         requestMock.mockResolvedValue({
+             data: {
+                 success: true,
+                 message: "GNSS profile apply succeeded",
+                 execution_baud: "auto",
+                 detected_baud: "115200",
+-                runtime_baud: "115200",
++                target_baud: "921600",
++                active_verified_baud: "921600",
++                runtime_baud: "921600",
+                 config_baud: "921600",
+                 executions: [
+                     {
+@@ -151,7 +153,27 @@
+         expect(await screen.findByText(en.settingsGnssReceiver.fieldExecutionBaud)).toBeInTheDocument();
+         expect(screen.getByText(en.settingsGnssReceiver.executionBaudAuto)).toBeInTheDocument();
+         expect(screen.getByText(en.settingsGnssReceiver.fieldDetectedBaud)).toBeInTheDocument();
++        expect(screen.getByText(en.settingsGnssReceiver.fieldTargetBaud)).toBeInTheDocument();
++        expect(screen.getByText(en.settingsGnssReceiver.fieldActiveVerifiedBaud)).toBeInTheDocument();
+         expect(screen.getByText(en.settingsGnssReceiver.fieldRuntimeBaud)).toBeInTheDocument();
+         expect(screen.getByText(en.settingsGnssReceiver.fieldConfigBaud)).toBeInTheDocument();
+     });
++
++    it("shows the manual current baud selector only after autodetection fails", async () => {
++        requestMock.mockResolvedValue({
++            data: {
++                success: false,
++                manual_baud_required: true,
++                message: "GNSS baud autodetection failed",
++            },
++            error: null,
++        });
++        const onManualCurrentBaudChange = vi.fn();
++        const user = userEvent.setup();
++        renderCard({ manualCurrentBaud: "115200", onManualCurrentBaudChange });
++
++        expect(screen.queryByText(en.settingsGnssReceiver.manualCurrentBaudTitle)).not.toBeInTheDocument();
++        await user.click(screen.getByRole("button", { name: new RegExp(en.settingsGnssReceiver.actionPlan, "i") }));
++        expect(await screen.findByText(en.settingsGnssReceiver.manualCurrentBaudTitle)).toBeInTheDocument();
++    });
+ });
+--- a/gui/web/src/components/settings/GnssReceiverActionsCard.tsx
++++ b/gui/web/src/components/settings/GnssReceiverActionsCard.tsx
+@@ -1,9 +1,10 @@
+ import React, { useMemo, useState } from "react";
+-import { Alert, App, Button, Card, Collapse, Space, Tag, Typography } from "antd";
++import { Alert, App, Button, Card, Collapse, Select, Space, Tag, Typography } from "antd";
+ import { PlayCircleOutlined, ReloadOutlined, SaveOutlined } from "@ant-design/icons";
+ import { useTranslation } from "react-i18next";
+ import { ContentType } from "../../api/Api.ts";
+ import { useApi } from "../../hooks/useApi.ts";
++import { GNSS_EXECUTION_BAUD_OPTIONS, normalizeGnssString } from "./gnssConfig.ts";
+ 
+ const { Paragraph, Text } = Typography;
+ 
+@@ -31,6 +32,9 @@
+     serial_device?: string;
+     execution_baud?: string;
+     detected_baud?: string;
++    target_baud?: string;
++    active_verified_baud?: string;
++    manual_baud_required?: boolean;
+     runtime_baud?: string;
+     config_baud?: string;
+     runtime_baud_differs_from_config?: boolean;
+@@ -53,6 +57,8 @@
+     onSaveAndRestartGps?: () => void | Promise<void>;
+     onPersistBeforeAction?: () => Promise<boolean>;
+     showSaveButtons?: boolean;
++    manualCurrentBaud?: unknown;
++    onManualCurrentBaudChange?: (value: string) => void;
+ };
+ 
+ const GNSS_ACTION_LABEL_KEYS: Record<GnssActionName, string> = {
+@@ -119,6 +125,8 @@
+     onSaveAndRestartGps,
+     onPersistBeforeAction,
+     showSaveButtons = false,
++    manualCurrentBaud,
++    onManualCurrentBaudChange,
+ }) => {
+     const guiApi = useApi();
+     const { t } = useTranslation();
+@@ -347,6 +355,23 @@
+                 />
+             )}
+ 
++            {lastResponse?.manual_baud_required && onManualCurrentBaudChange && (
++                <Card size="small" type="inner" title={t("settingsGnssReceiver.manualCurrentBaudTitle")} style={{ marginTop: 12 }}>
++                    <Paragraph type="secondary">
++                        {t("settingsGnssReceiver.manualCurrentBaudHelp")}
++                    </Paragraph>
++                    <Select
++                        value={normalizeGnssString(manualCurrentBaud) || "115200"}
++                        onChange={onManualCurrentBaudChange}
++                        options={GNSS_EXECUTION_BAUD_OPTIONS.filter((option) => option.value !== "auto").map((option) => ({
++                            value: option.value,
++                            label: option.label,
++                        }))}
++                        style={{ width: 180 }}
++                    />
++                </Card>
++            )}
++
+             {(lastResponse || transportError) && (
+                 <Space direction="vertical" size={12} style={{ width: "100%", marginTop: 12 }}>
+                     {lastResponse && (
+@@ -401,6 +426,18 @@
+                                         {lastResponse.detected_baud}
+                                     </Text>
+                                 )}
++                                {lastResponse.target_baud && (
++                                    <Text>
++                                        <Text strong>{t("settingsGnssReceiver.fieldTargetBaud")}</Text>{" "}
++                                        {lastResponse.target_baud}
++                                    </Text>
++                                )}
++                                {lastResponse.active_verified_baud && (
++                                    <Text>
++                                        <Text strong>{t("settingsGnssReceiver.fieldActiveVerifiedBaud")}</Text>{" "}
++                                        {lastResponse.active_verified_baud}
++                                    </Text>
++                                )}
+                                 {lastResponse.runtime_baud && (
+                                     <Text>
+                                         <Text strong>{t("settingsGnssReceiver.fieldRuntimeBaud")}</Text>{" "}
+--- a/gui/web/src/components/settings/PositioningSection.tsx
++++ b/gui/web/src/components/settings/PositioningSection.tsx
+@@ -9,14 +9,12 @@
+ import {
+     GNSS_BAUD_OPTIONS,
+     GNSS_ACTION_SETTINGS_KEYS,
+-    GNSS_EXECUTION_BAUD_OPTIONS,
+     GNSS_PROFILE_OPTIONS,
+     GNSS_PROFILE_RATE_OPTIONS,
+     GNSS_RECEIVER_FAMILY_OPTIONS,
+     GNSS_SIGNAL_PROFILE_OPTIONS,
+     GNSS_SIGNAL_PROFILE_CUSTOM_HELP_TEXT,
+     normalizeGnssProfile,
+-    normalizeGnssString,
+     normalizeGnssSignalProfile,
+ } from "./gnssConfig.ts";
+ import { GnssSignalProfileHelp } from "./GnssSignalProfileHelp.tsx";
+@@ -56,10 +54,6 @@
+     const gpsStatus = deriveGpsStatus(gnssStatus);
+     const detectedReceiver = gnssReceiverLabel(gnssStatus);
+     const selectedSignalProfile = normalizeGnssSignalProfile(values.gnss_signal_profile);
+-    const selectedExecutionBaud = (() => {
+-        const value = normalizeGnssString(values.gnss_execution_baud).toLowerCase();
+-        return value === "" || value === "auto" ? "auto" : normalizeGnssString(values.gnss_execution_baud);
+-    })();
+     const statusType: "success" | "warning" | "info" = gpsStatus.fixType === "RTK_FIX"
+         ? "success"
+         : gpsStatus.fixType === "NO_FIX"
+@@ -94,11 +88,7 @@
+         }
+         return onPersistGnssSettings(partial);
+     };
+-    // The sidecar runtime baud and the target receiver config baud should stay
+-    // aligned for normal operation. The separate execution/probing baud lives
+-    // in expert mode and is only used by the one-shot configurator flow.
+     const handleBaudChange = (v: number) => {
+-        onChange("gnss_serial_baud", v);
+         onChange("gnss_config_baud", v);
+     };
+ 
+@@ -210,7 +200,7 @@
+                                 tooltip={t("settingsPositioning.baudTooltip")}
+                             >
+                                 <Select
+-                                    value={values.gnss_serial_baud ?? 921600}
++                                    value={values.gnss_config_baud ?? 921600}
+                                     onChange={handleBaudChange}
+                                     options={GNSS_BAUD_OPTIONS.map((option) => ({
+                                         value: option.value,
+@@ -300,24 +290,6 @@
+                                 </Col>
+                             </Row>
+                             <Row gutter={[16, 0]}>
+-                                <Col xs={24} sm={12}>
+-                                    <Form.Item
+-                                        label={t("settingsPositioning.executionBaudLabel")}
+-                                        tooltip={t("settingsPositioning.executionBaudTooltip")}
+-                                        extra={t("settingsPositioning.executionBaudHelpText")}
+-                                    >
+-                                        <Select
+-                                            value={selectedExecutionBaud}
+-                                            onChange={(value) => onChange("gnss_execution_baud", value)}
+-                                            options={GNSS_EXECUTION_BAUD_OPTIONS.map((option) => ({
+-                                                value: option.value,
+-                                                label: option.value === "auto" ? t(option.label) : option.label,
+-                                            }))}
+-                                        />
+-                                    </Form.Item>
+-                                </Col>
+-                            </Row>
+-                            <Row gutter={[16, 0]}>
+                                 <Col xs={12} sm={6}>
+                                     <Form.Item label={t("settingsPositioning.rtkWaitAfterUndockLabel")}>
+                                         <InputNumber
+@@ -375,6 +347,8 @@
+                     onSave={onSave}
+                     onSaveAndRestartGps={onSaveAndRestartGps}
+                     onPersistBeforeAction={persistCurrentGnssSettings}
++                    manualCurrentBaud={values.gnss_execution_baud}
++                    onManualCurrentBaudChange={(value) => onChange("gnss_execution_baud", value)}
+                     showSaveButtons
+                 />
+             )}
+--- a/gui/web/src/i18n/locales/en.json
++++ b/gui/web/src/i18n/locales/en.json
+@@ -2512,8 +2512,8 @@
+     "gnssProfilesDescription": "Normal settings are vendor-neutral. Expert settings are receiver-family specific and stay hidden until you explicitly enable them.",
+     "signalProfileLabel": "Signal Profile",
+     "signalProfileTooltip": "High-level constellation and signal preset. Saved with your settings, but only written to the receiver's flash when you run Plan & Apply in Expert mode.",
+-    "baudLabel": "Baud",
+-    "baudTooltip": "Target runtime/config baud for mowgli-gps and the receiver profile. Execution-baud probing for live apply is configured separately in expert mode.",
++    "baudLabel": "Target baud",
++    "baudTooltip": "Requested receiver baud after configuration. Universal GNSS detects and validates the current baud separately before applying it.",
+     "savedToFlashTitle": "Saved to the GPS receiver flash",
+     "savedToFlashIntro": "Baud and signal profile are firmware-side settings: on save they are written to the GPS receiver's flash and the receiver briefly reconnects.",
+     "savedToFlashSafeBaud": "is the safe baud for USB serial links;",
+@@ -2648,10 +2648,14 @@
+     "fieldSerialDevice": "Serial device:",
+     "fieldExecutionBaud": "Execution baud:",
+     "fieldDetectedBaud": "Detected live baud:",
++    "fieldTargetBaud": "Requested target baud:",
++    "fieldActiveVerifiedBaud": "Verified active baud after apply:",
+     "fieldRuntimeBaud": "Active runtime baud:",
+     "fieldConfigBaud": "Target configured baud:",
+     "executionBaudAuto": "auto / probing",
+     "unknownValue": "unknown",
++    "manualCurrentBaudTitle": "Current baud (manual fallback)",
++    "manualCurrentBaudHelp": "Autodetection failed. Select the receiver's current baud; Universal GNSS will validate it with VERSIONA before any configuration write.",
+     "fieldRestartError": "Restart error:",
+     "backendWarnings": "Backend warnings",
+     "commandIndex": "Command {{index}}",
+--- a/gui/web/src/i18n/locales/fr.json
++++ b/gui/web/src/i18n/locales/fr.json
+@@ -2508,8 +2508,8 @@
+     "gnssProfilesDescription": "Les réglages normaux sont indépendants du fabricant. Les réglages experts sont spécifiques à la famille de récepteur et restent masqués jusqu'à ce que vous les activiez explicitement.",
+     "signalProfileLabel": "Profil de signal",
+     "signalProfileTooltip": "Préréglage haut niveau de constellation et de signal. C'est tout ce que la plupart des utilisateurs ont besoin de toucher.",
+-    "baudLabel": "Baud",
+-    "baudTooltip": "Baud cible runtime/config pour mowgli-gps et le profil du récepteur. La détection du baud d'exécution pour un apply live se règle séparément en mode expert.",
++    "baudLabel": "Baud cible",
++    "baudTooltip": "Baud demandé au récepteur après configuration. Universal GNSS détecte et valide séparément le baud courant avant l'apply.",
+     "savedToFlashTitle": "Enregistré dans la flash du récepteur GPS",
+     "savedToFlashIntro": "Le baud et le profil de signal sont des réglages côté firmware : à l'enregistrement, ils sont écrits dans la flash du récepteur GPS et le récepteur se reconnecte brièvement.",
+     "savedToFlashSafeBaud": "est le baud sûr pour les liaisons série USB ;",
+@@ -2644,10 +2644,14 @@
+     "fieldSerialDevice": "Périphérique série :",
+     "fieldExecutionBaud": "Baud d'exécution :",
+     "fieldDetectedBaud": "Baud live détecté :",
++    "fieldTargetBaud": "Baud cible demandé :",
++    "fieldActiveVerifiedBaud": "Baud actif vérifié après apply :",
+     "fieldRuntimeBaud": "Baud runtime actif :",
+     "fieldConfigBaud": "Baud configuré cible :",
+     "executionBaudAuto": "auto / sonde",
+     "unknownValue": "inconnu",
++    "manualCurrentBaudTitle": "Baud courant (repli manuel)",
++    "manualCurrentBaudHelp": "L'autodétection a échoué. Sélectionnez le baud courant du récepteur ; Universal GNSS le validera avec VERSIONA avant toute écriture de configuration.",
+     "fieldRestartError": "Erreur de redémarrage :",
+     "backendWarnings": "Avertissements du backend",
+     "commandIndex": "Commande {{index}}",
+--- a/install/lib/config.sh
++++ b/install/lib/config.sh
+@@ -1111,6 +1111,7 @@
+   PREV_GNSS_TRANSPORT="$(existing_yaml_value gnss_transport "$yaml_file")"
+   PREV_GNSS_SERIAL_DEVICE="$(existing_yaml_value gnss_serial_device "$yaml_file")"
+   PREV_GNSS_SERIAL_BAUD="$(existing_yaml_value gnss_serial_baud "$yaml_file")"
++  PREV_GNSS_CONFIG_BAUD="$(existing_yaml_value gnss_config_baud "$yaml_file")"
+   PREV_GNSS_FRAME_ID="$(existing_yaml_value gnss_frame_id "$yaml_file")"
+   PREV_GNSS_NTRIP_GGA_ENABLED="$(existing_yaml_value gnss_ntrip_gga_enabled "$yaml_file")"
+   PREV_GNSS_NTRIP_GGA_INTERVAL_S="$(existing_yaml_value gnss_ntrip_gga_interval_s "$yaml_file")"
+@@ -1429,7 +1430,7 @@
+   local yaml_file="$DOCKER_DIR/config/mowgli/mowgli_robot.yaml"
+   local template="$INSTALL_DIR/config/mowgli/mowgli_robot.yaml"
+   local resolved_receiver_family resolved_transport resolved_serial_device
+-  local resolved_serial_baud resolved_frame_id resolved_ntrip_enabled
++  local resolved_serial_baud resolved_config_baud resolved_frame_id resolved_ntrip_enabled
+   local resolved_ntrip_host resolved_ntrip_port resolved_ntrip_user
+   local resolved_ntrip_password resolved_ntrip_mountpoint
+   local resolved_ntrip_gga_enabled resolved_ntrip_gga_interval_s
+@@ -1476,6 +1477,7 @@
+   resolved_serial_baud="$(preserved_gnss_value \
+     "$(if gnss_installer_key_is_explicit GNSS_SERIAL_BAUD; then printf 'true'; else printf 'false'; fi)" \
+     "${GNSS_SERIAL_BAUD}" "${PREV_GNSS_SERIAL_BAUD:-}" "921600")"
++  resolved_config_baud="${PREV_GNSS_CONFIG_BAUD:-$resolved_serial_baud}"
+   resolved_frame_id="$(preserved_gnss_value \
+     "$(if gnss_installer_key_is_explicit GNSS_FRAME_ID; then printf 'true'; else printf 'false'; fi)" \
+     "${GNSS_FRAME_ID}" "${PREV_GNSS_FRAME_ID:-}" "gps_link")"
+@@ -1505,6 +1507,7 @@
+   _yaml_patch_key "$yaml_file" gnss_transport "\"$resolved_transport\""
+   _yaml_patch_key "$yaml_file" gnss_serial_device "\"$resolved_serial_device\""
+   _yaml_patch_key "$yaml_file" gnss_serial_baud "$resolved_serial_baud"
++  _yaml_patch_key "$yaml_file" gnss_config_baud "$resolved_config_baud"
+   _yaml_patch_key "$yaml_file" gnss_frame_id "\"$resolved_frame_id\""
+   _yaml_patch_key "$yaml_file" ntrip_enabled   "$resolved_ntrip_enabled"
+   _yaml_patch_key "$yaml_file" ntrip_host      "\"$resolved_ntrip_host\""
+--- a/install/tests/test_compose_validity.sh
++++ b/install/tests/test_compose_validity.sh
+@@ -152,6 +152,13 @@
+   assert_contains "MAVROS sidecar receives its NTRIP-disabled config copy" \
+     "./docker/config/mavros:/ros2_ws/config:ro" "$MAVROS_FRAGMENT_CONTENT"
+ 
++  MAVROS_ROBOT_YAML="$(cat "$MAVROS_REPO/docker/config/mowgli/mowgli_robot.yaml")"
++  MAVROS_UG_PARAMETERS="$(cat "$MAVROS_REPO/docker/config/universal_gnss/parameters.yaml")"
++  assert_contains "Universal GNSS target baud stays in canonical Mowgli YAML under MAVROS" \
++    "gnss_config_baud:" "$MAVROS_ROBOT_YAML"
++  assert_contains "Universal GNSS sidecar baud is generated independently of HARDWARE_BACKEND" \
++    "serial_baud:" "$MAVROS_UG_PARAMETERS"
++
+   MAVROS_ENV_CONTENT="$(cat "$MAVROS_REPO/docker/.env")"
+   assert_contains "MAVROS image ignores MowgliNext IMAGE_TAG" \
+     "MAVROS_IMAGE=ghcr.io/pepeuch/mowglimavros/mowgli-mavros-sidecar:kilted@sha256:04e4eb17b0f5ce38f882f68346b1694774fa87e1945b38b57c94f90da34dd560" \
+--- a/install/tests/test_robot_yaml.sh
++++ b/install/tests/test_robot_yaml.sh
+@@ -52,6 +52,8 @@
+   '^[[:space:]]+gnss_serial_device:[[:space:]]+"?/dev/ttyAMA4"?[[:space:]]*$' "$CONTENT"
+ assert_match "gnss_serial_baud=921600" \
+   '^[[:space:]]+gnss_serial_baud:[[:space:]]+921600[[:space:]]*$' "$CONTENT"
++assert_match "gnss_config_baud=921600 is a distinct canonical target" \
++  '^[[:space:]]+gnss_config_baud:[[:space:]]+921600[[:space:]]*$' "$CONTENT"
+ assert_match "gnss_transport=serial" \
+   '^[[:space:]]+gnss_transport:[[:space:]]+"?serial"?[[:space:]]*$' "$CONTENT"
+ assert_match "gnss_frame_id=gps_link" \
+
+

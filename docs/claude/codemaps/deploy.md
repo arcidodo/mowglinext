@@ -222,7 +222,7 @@ bash install/mowglinext.sh --branch=dev --image-tag=dev --gnss=auto --gnss-conne
 # Simulation
 docker compose -f docker/docker-compose.simulation.yaml up dev-sim
 
-# Sensor images (the GPS sidecar comes from Universal GNSS release v0.1.4-rc1)
+# Sensor images (the GPS sidecar comes from Universal GNSS release v0.1.4-rc2)
 docker build -t mowgli-lidar --target runtime sensors/lidar-ldlidar/
 GNSS_DRY_RUN=true GNSS_CONFIG_PATH=install/config/mowgli/mowgli_robot.yaml bash sensors/gps/start_gps.sh   # prints the commands, launches nothing
 ```
@@ -238,7 +238,7 @@ CI: LiDAR sensor images build via `.github/workflows/sensors-lidar-{ldlidar,rpli
 - **`cyclonedds.xml`** exists twice: `install/config/cyclonedds.xml` (seed) and `docker/config/cyclonedds.xml` (tracked, actually mounted). Edit BOTH — the seed-if-absent guard never fires on a repo clone (`docker/config/cyclonedds.xml` L2–5).
 - **GNSS param name change** → `sensors/gps/start_gps.sh` resolver → `install/lib/env.sh` `load_gnss_ntrip_runtime_defaults` L90 + `install/lib/checks.sh` `check_generated_gps_yaml_alignment` L175 → `install/config/mowgli/mowgli_robot.yaml` → the GUI's GNSS settings page.
 - **`mowgli_gnss_bridge` behaviour** → keep `sensors/gps/universal_gnss_topic_bridge.py` behaviour-identical (it is the `GNSS_BRIDGE_IMPL=python` fallback) → `sensors/gps/mowgli_gnss_bridge/test/` → `sensors-gps.yml` smoke test asserts both executables exist.
-- **universal-gnss submodule bump** → keep the gitlink pinned to the published interface commit; runtime release/image changes use the independently published Universal GNSS sidecar (`v0.1.4-rc1`), never copied runtime sources.
+- **universal-gnss submodule bump** → keep the gitlink pinned to the published interface commit; runtime release/image changes use the independently published Universal GNSS sidecar (`v0.1.4-rc2`), never copied runtime sources.
 - **New udev symlink** → `lib/udev.sh` `build_dynamic_udev_rules` → `lib/checks.sh` `check_devices` L73 → the compose fragment's device path default → `install/tests/test_udev_install.sh`.
 - **Image name change** → `config.sh` `recompute_image_defaults` L45–51 must match the workflow `IMAGE_NAME`/`inputs.image` exactly, and `docker/.env.example` L24–28.
 

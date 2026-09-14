@@ -239,8 +239,8 @@ done
 
 assert_contains "Universal GNSS image is independently configured" \
   "UNIVERSAL_GNSS_IMAGE=${UNIVERSAL_GNSS_IMAGE_DEFAULT}" "$(cat "$ENV_FILE")"
-assert_contains "Universal GNSS image is pinned to v0.1.4-rc1" \
-  "UNIVERSAL_GNSS_IMAGE=ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.4-rc1" \
+assert_contains "Universal GNSS image is pinned to v0.1.4-rc2" \
+  "UNIVERSAL_GNSS_IMAGE=ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.4-rc2" \
   "$(cat "$ENV_FILE")"
 assert_contains "installer replaces a previous Universal GNSS image pin" \
   "unset MOWGLI_ROS2_IMAGE GPS_IMAGE LIDAR_IMAGE MAVROS_IMAGE UNIVERSAL_GNSS_IMAGE GUI_IMAGE" \

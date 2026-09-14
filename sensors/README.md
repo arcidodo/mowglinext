@@ -25,7 +25,7 @@ image pin, device/config mounts, ownership split, and validation command.
 
 Direct GNSS installs use the externally published Universal GNSS sidecar only
 (`GNSS_STACK` accepts `universal|disabled`; "no GNSS" means not composing the
-container). The official runtime release is `v0.1.4-rc1`.
+container). The official runtime release is `v0.1.4-rc2`.
 `UNIVERSAL_GNSS_IMAGE` is required and must be pinned separately
 from MowgliNext `IMAGE_TAG`. `GNSS_DEVICE` maps one stable host path (prefer
 `/dev/serial/by-id/...`) to `/dev/gnss-receiver`; the sidecar is the sole
