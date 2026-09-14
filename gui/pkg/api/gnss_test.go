@@ -184,9 +184,14 @@ func stubGNSSSerialDeviceAccess(t *testing.T) {
 
 func stubGNSSRuntimeRegen(t *testing.T) {
 	t.Helper()
-	previous := runGNSSRuntimeRegen
+	previousRegen := runGNSSRuntimeRegen
+	previousReconcile := runGNSSRuntimeReconcile
 	runGNSSRuntimeRegen = func(context.Context) error { return nil }
-	t.Cleanup(func() { runGNSSRuntimeRegen = previous })
+	runGNSSRuntimeReconcile = func(context.Context) error { return nil }
+	t.Cleanup(func() {
+		runGNSSRuntimeRegen = previousRegen
+		runGNSSRuntimeReconcile = previousReconcile
+	})
 }
 
 func defaultMockDocker() *mockDockerProvider {
@@ -206,6 +211,33 @@ func defaultMockDocker() *mockDockerProvider {
 			Binds:      []string{"/dev:/dev", "/tmp:/tmp:ro"},
 		},
 	}
+}
+
+func TestGNSSRestartReconcilesGPSServiceAndSynchronizesDeviceContract(t *testing.T) {
+	const device = "/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0"
+	db, envFile := newGNSSTestDB(t, defaultGNSSYAML(device, "unicore", "rover_high_precision"))
+	docker := defaultMockDocker()
+	reconcileCalls := 0
+	runGNSSRuntimeReconcile = func(context.Context) error {
+		reconcileCalls++
+		return nil
+	}
+	router := setupGNSSRouter(db, docker)
+
+	w := httptest.NewRecorder()
+	req, _ := http.NewRequest("POST", "/api/settings/gnss/restart", nil)
+	router.ServeHTTP(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code)
+	assert.Equal(t, 1, reconcileCalls)
+	assert.Empty(t, docker.startCalls)
+	assert.Empty(t, docker.restartCalls)
+
+	envContent, err := os.ReadFile(envFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(envContent), "GNSS_SERIAL_DEVICE="+device)
+	assert.Contains(t, string(envContent), "GNSS_DEVICE="+device)
+	assert.Contains(t, string(envContent), "GNSS_DEVICE_GID=20")
 }
 
 func TestGNSSCommandsUseUniversalGNSSRC4CLIContract(t *testing.T) {
@@ -345,9 +377,9 @@ func TestGNSSApply_PassesConfigBaudAndRestartsAfterSuccess(t *testing.T) {
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, docker.stopCalls, 1)
-	require.Len(t, docker.startCalls, 1)
+	assert.Empty(t, docker.startCalls)
 	require.Len(t, docker.runSpecs, 1)
-	assert.Equal(t, []string{"stop", "run", "start"}, docker.events)
+	assert.Equal(t, []string{"stop", "run"}, docker.events)
 	assert.Equal(t, []string{"/dev:/dev"}, docker.runSpecs[0].Binds)
 	assert.Equal(t, []string{"20"}, docker.runSpecs[0].GroupAdd)
 	assert.Equal(t, []pkgtypes.ContainerDevice{{
@@ -515,9 +547,9 @@ func TestGNSSFactoryResetApply_UsesDedicatedResetModeThenRuntimeProfileApply(t *
 
 	require.Equal(t, http.StatusOK, w.Code)
 	require.Len(t, docker.stopCalls, 1)
-	require.Len(t, docker.startCalls, 1)
+	assert.Empty(t, docker.startCalls)
 	require.Len(t, docker.runSpecs, 2)
-	assert.Equal(t, []string{"stop", "run", "run", "start"}, docker.events)
+	assert.Equal(t, []string{"stop", "run", "run"}, docker.events)
 
 	resetCommand := docker.runSpecs[0].Cmd
 	assert.Equal(t, gnssConfigApplyCommand, resetCommand[0])
@@ -960,7 +992,7 @@ func TestGNSSApply_RestartFailureIsReportedAsPartialFailure(t *testing.T) {
 	db, _ := newGNSSTestDB(t, defaultGNSSYAML("/dev/serial/by-id/usb-1a86_USB_Serial-if00-port0", "unicore", "rover_high_precision"))
 	docker := defaultMockDocker()
 	docker.runResults = []pkgtypes.ContainerRunResult{{ExitCode: 0, Stdout: "apply ok"}}
-	docker.startErr = assert.AnError
+	runGNSSRuntimeReconcile = func(context.Context) error { return assert.AnError }
 	router := setupGNSSRouter(db, docker)
 
 	w := httptest.NewRecorder()
@@ -969,7 +1001,7 @@ func TestGNSSApply_RestartFailureIsReportedAsPartialFailure(t *testing.T) {
 	router.ServeHTTP(w, req)
 
 	require.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, []string{"stop", "run", "start"}, docker.events)
+	assert.Equal(t, []string{"stop", "run"}, docker.events)
 
 	var response GNSSActionResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &response))

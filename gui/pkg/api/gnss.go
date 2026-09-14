@@ -34,6 +34,7 @@ const (
 )
 
 var runGNSSRuntimeRegen = regenerateGNSSRuntimeConfigs
+var runGNSSRuntimeReconcile = reconcileGNSSRuntimeService
 var gnssSerialDeviceAccess = serialDeviceAccess
 
 var allowedGNSSBauds = map[string]bool{
@@ -136,7 +137,7 @@ func postGNSSPlan(dbProvider pkgtypes.IDBProvider, dockerProvider pkgtypes.IDock
 			return
 		}
 
-	execution, err := runGNSSTool(c.Request.Context(), dockerProvider, containerDetails, false, "", buildGNSSPlanCommand(cfg))
+		execution, err := runGNSSTool(c.Request.Context(), dockerProvider, containerDetails, false, "", buildGNSSPlanCommand(cfg))
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
@@ -231,24 +232,20 @@ func postGNSSRestart(dbProvider pkgtypes.IDBProvider, dockerProvider pkgtypes.ID
 			return
 		}
 
-	response := newGNSSActionResponse("restart", cfg, containerDetails)
+		response := newGNSSActionResponse("restart", cfg, containerDetails)
 		addGNSSConfigWarnings(&response, cfg, false)
-		if err := runGNSSRuntimeRegen(c.Request.Context()); err != nil {
+		if err := syncGNSSDeviceRuntimeEnv(cfg); err != nil {
+			c.JSON(http.StatusBadRequest, ErrorResponse{Error: err.Error()})
+			return
+		}
+		if err := runGNSSRuntimeReconcile(c.Request.Context()); err != nil {
 			c.JSON(http.StatusInternalServerError, ErrorResponse{Error: err.Error()})
 			return
 		}
 
-		actionErr := dockerProvider.ContainerStart(c.Request.Context(), containerDetails.ID)
-		if containerDetails.Running {
-			actionErr = dockerProvider.ContainerRestart(c.Request.Context(), containerDetails.ID)
-		}
 		response.RestartAttempted = true
-		response.RestartSucceeded = actionErr == nil
-		response.Success = actionErr == nil
-		if actionErr != nil {
-			response.RestartError = actionErr.Error()
-			response.Message = "Failed to restart mowgli-gps"
-		}
+		response.RestartSucceeded = true
+		response.Success = true
 
 		c.JSON(http.StatusOK, response)
 	}
@@ -266,6 +263,9 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 
 	response := newGNSSActionResponse("apply", cfg, containerDetails)
 	addGNSSConfigWarnings(&response, cfg, true)
+	if err := syncGNSSDeviceRuntimeEnv(cfg); err != nil {
+		return GNSSActionResponse{}, http.StatusBadRequest, err
+	}
 	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
 		return GNSSActionResponse{}, http.StatusInternalServerError, err
 	}
@@ -309,16 +309,9 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 	}
 	response.RuntimeBaud = resolvedRuntimeBaud
 	response.RuntimeBaudDiffersFromConfig = resolvedRuntimeBaud != cfg.ConfigBaud
-	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
-		response.Success = false
-		response.PartialFailure = true
-		response.Message = "GNSS apply succeeded but runtime configuration regeneration failed"
-		return response, http.StatusOK, nil
-	}
-
 	if containerDetails.Running {
 		response.RestartAttempted = true
-		if err := dockerProvider.ContainerStart(parentCtx, containerDetails.ID); err != nil {
+		if err := runGNSSRuntimeReconcile(parentCtx); err != nil {
 			response.Success = false
 			response.PartialFailure = true
 			response.RestartSucceeded = false
@@ -327,6 +320,11 @@ func runApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDBProvider, do
 			return response, http.StatusOK, nil
 		}
 		response.RestartSucceeded = true
+	} else if err := runGNSSRuntimeRegen(parentCtx); err != nil {
+		response.Success = false
+		response.PartialFailure = true
+		response.Message = "GNSS apply succeeded but runtime configuration regeneration failed"
+		return response, http.StatusOK, nil
 	}
 
 	response.Success = true
@@ -350,6 +348,9 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 	response := newGNSSActionResponse("factory_reset_apply", cfg, containerDetails)
 	addGNSSConfigWarnings(&response, cfg, true)
 	addGNSSFactoryResetRecoveryWarning(&response, cfg)
+	if err := syncGNSSDeviceRuntimeEnv(cfg); err != nil {
+		return GNSSActionResponse{}, http.StatusBadRequest, err
+	}
 
 	if containerDetails.Running {
 		response.StopAttempted = true
@@ -404,16 +405,9 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 	}
 	response.RuntimeBaud = resolvedRuntimeBaud
 	response.RuntimeBaudDiffersFromConfig = resolvedRuntimeBaud != cfg.ConfigBaud
-	if err := runGNSSRuntimeRegen(parentCtx); err != nil {
-		response.Success = false
-		response.PartialFailure = true
-		response.Message = "Factory reset + apply succeeded but runtime configuration regeneration failed"
-		return response, http.StatusOK, nil
-	}
-
 	if containerDetails.Running {
 		response.RestartAttempted = true
-		if err := dockerProvider.ContainerStart(parentCtx, containerDetails.ID); err != nil {
+		if err := runGNSSRuntimeReconcile(parentCtx); err != nil {
 			response.Success = false
 			response.PartialFailure = true
 			response.RestartSucceeded = false
@@ -422,6 +416,11 @@ func runFactoryResetApplyFlow(parentCtx context.Context, dbProvider pkgtypes.IDB
 			return response, http.StatusOK, nil
 		}
 		response.RestartSucceeded = true
+	} else if err := runGNSSRuntimeRegen(parentCtx); err != nil {
+		response.Success = false
+		response.PartialFailure = true
+		response.Message = "Factory reset + apply succeeded but runtime configuration regeneration failed"
+		return response, http.StatusOK, nil
 	}
 
 	response.Success = true
@@ -482,6 +481,18 @@ func serialDeviceAccess(device string) (string, string, error) {
 		return "", "", fmt.Errorf("cannot resolve GNSS serial device %q: %w", device, err)
 	}
 	return strconv.FormatUint(uint64(stat.Gid), 10), resolvedDevice, nil
+}
+
+func syncGNSSDeviceRuntimeEnv(cfg gnssSavedConfig) error {
+	deviceGID, _, err := gnssSerialDeviceAccess(cfg.SerialDevice)
+	if err != nil {
+		return err
+	}
+	return writeRuntimeEnvFile(cfg.RuntimeEnvPath, map[string]string{
+		"GNSS_SERIAL_DEVICE": cfg.SerialDevice,
+		"GNSS_DEVICE":        cfg.SerialDevice,
+		"GNSS_DEVICE_GID":    deviceGID,
+	})
 }
 
 func newGNSSActionResponse(action string, cfg gnssSavedConfig, containerDetails pkgtypes.ContainerDetails) GNSSActionResponse {
@@ -681,7 +692,7 @@ func deviceBind(existingBinds []string) string {
 // through the host init mount namespace. The GUI has /runtime_config bind-mounted
 // from the host's docker directory; mountinfo preserves that host source even
 // though the container sees it at a different mount point.
-func regenerateGNSSRuntimeConfigs(parentCtx context.Context) error {
+func runGNSSStackCommand(parentCtx context.Context, action string) error {
 	dockerDir, err := hostBindSourceForMount(gnssRuntimeConfigMount)
 	if err != nil {
 		return fmt.Errorf("cannot locate the Mowgli runtime config bind: %w", err)
@@ -693,11 +704,19 @@ func regenerateGNSSRuntimeConfigs(parentCtx context.Context) error {
 	stackScript := filepath.Join(filepath.Dir(dockerDir), "docker", "stack.sh")
 	ctx, cancel := context.WithTimeout(parentCtx, gnssRouteCommandTimeout)
 	defer cancel()
-	command := exec.CommandContext(ctx, "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", stackScript, "regen")
+	command := exec.CommandContext(ctx, "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "-p", "--", stackScript, action)
 	if output, err := command.CombinedOutput(); err != nil {
-		return fmt.Errorf("failed to regenerate GNSS runtime configuration: %w: %s", err, strings.TrimSpace(string(output)))
+		return fmt.Errorf("GNSS stack action %s failed: %w: %s", action, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func regenerateGNSSRuntimeConfigs(parentCtx context.Context) error {
+	return runGNSSStackCommand(parentCtx, "regen")
+}
+
+func reconcileGNSSRuntimeService(parentCtx context.Context) error {
+	return runGNSSStackCommand(parentCtx, "reconcile-gps")
 }
 
 func hostBindSourceForMount(mountPoint string) (string, error) {

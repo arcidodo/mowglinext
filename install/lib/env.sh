@@ -158,10 +158,13 @@ sync_gnss_env_contract_values() {
   GNSS_SERIAL_DEVICE="$(gnss_serial_device_from_state)"
   GNSS_SERIAL_BAUD="$(gnss_serial_baud_from_state)"
   GNSS_FRAME_ID="${GNSS_FRAME_ID:-gps_link}"
-  : "${GNSS_DEVICE:=${GNSS_SERIAL_DEVICE}}"
+  GNSS_DEVICE="${GNSS_SERIAL_DEVICE}"
   : "${GNSS_DEVICE_GID:=20}"
+  if [[ -n "$GNSS_DEVICE" && -e "$GNSS_DEVICE" ]]; then
+    GNSS_DEVICE_GID="$(stat -Lc '%g' -- "$GNSS_DEVICE")"
+  fi
 
-  : "${GNSS_NTRIP_ENABLED:=${CONFIG_NTRIP_ENABLED:-true}}"
+  GNSS_NTRIP_ENABLED="${CONFIG_NTRIP_ENABLED:-true}"
   : "${GNSS_NTRIP_HOST:=${CONFIG_NTRIP_HOST:-crtk.net}}"
   : "${GNSS_NTRIP_PORT:=${CONFIG_NTRIP_PORT:-2101}}"
   GNSS_NTRIP_USERNAME="${GNSS_NTRIP_USERNAME:-${CONFIG_NTRIP_USER:-}}"

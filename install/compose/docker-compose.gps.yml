@@ -50,6 +50,7 @@ services:
       - fix_topic:=/gps/fix
       - status_topic:=/universal_gnss_receiver/status
       - rtcm_topic:=/universal_gnss_receiver/rtcm
+      - ntrip_enabled:=${GNSS_NTRIP_ENABLED:-true}
     # The upstream default requires NTRIP. This remains a bounded service
     # responsiveness check for each component actually started.
     healthcheck:

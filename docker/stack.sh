@@ -147,6 +147,11 @@ case "$cmd" in
     require_compose_file
     compose restart "$@"
     ;;
+  reconcile-gps)
+    regen
+    compose up -d --no-deps --force-recreate gps
+    compose ps gps
+    ;;
   pull)
     regen
     compose pull "$@"
