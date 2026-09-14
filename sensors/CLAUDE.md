@@ -55,7 +55,7 @@ CI: one thin caller per LiDAR image (`.github/workflows/sensors-lidar-{ldlidar,r
 
 ## Component-specific gotchas
 
-- **universal-gnss is a pinned submodule used only for public interfaces.** A bump means re-pinning the gitlink; never copy its runtime packages into a Mowgli workspace or image. The official external sidecar reference is release `v0.1.3-rc1`.
+- **universal-gnss is a pinned submodule used only for public interfaces.** A bump means re-pinning the gitlink; never copy its runtime packages into a Mowgli workspace or image. The official external sidecar reference is release `v0.1.4-rc1`.
 - **Adding a default to `install/compose/docker-compose.gps.yml` masks the operator's YAML.** Empty `GNSS_*` env values are deliberate ("not set") — the resolvers (`start_gps.sh:66–376`) read `/config/mowgli_robot.yaml` first.
 - **`parse_yaml` is grep+sed, not a YAML parser** (`start_gps.sh:25–35`): it takes the FIRST indented `key:` anywhere in the file, regardless of which node's block it belongs to, and strips exactly one quote pair. Its `|| true` is load-bearing under `set -e` — remove it and a missing key aborts the container before the fallbacks apply.
 - **The receiver-profile apply must finish and release the port** before `receiver_node` opens it (`start_gps.sh:469–512`) — only one process can hold the serial device. Its failure is deliberately non-fatal (a pre-configured receiver still runs); do not make it fatal.

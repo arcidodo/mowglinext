@@ -187,7 +187,7 @@ ships; the full installer writes many more (`GNSS_*`, `LIDAR_TYPE`,
 | `LIDAR_PORT` | `/dev/ttyS1` | Device path passed to the RPLiDAR / STL27L drivers (the LD19 image ignores it and opens `/dev/lidar`) |
 | `LIDAR_BAUD` | `230400` | Baud rate for the RPLiDAR / STL27L drivers (the LD19 image ignores it) |
 | `MOWGLI_ROS2_IMAGE` | `ghcr.io/mowglinext/mowglinext/mowgli-ros2:main` | Full ROS2 stack |
-| `UNIVERSAL_GNSS_IMAGE` | `ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.3-rc1@sha256:781579c2cf79a6932ae8d64e8b395957de09f59f638df1136086351cd66e7e40` | Published, pinned Universal GNSS sidecar; independent of `IMAGE_TAG` |
+| `UNIVERSAL_GNSS_IMAGE` | `ghcr.io/pepeuch/universal-gnss-ros2-kilted:v0.1.4-rc1` | Published, pinned Universal GNSS sidecar; independent of `IMAGE_TAG` |
 | `GNSS_DEVICE` | derived from `GNSS_SERIAL_DEVICE` | Stable host receiver path mapped to `/dev/gnss-receiver` |
 | `LIDAR_IMAGE` | `ghcr.io/mowglinext/mowglinext/lidar-ldlidar:main` | LD19 LiDAR driver |
 | `MAVROS_IMAGE` | `ghcr.io/pepeuch/mowglimavros/mowgli-mavros-sidecar:kilted@sha256:04e4eb17b0f5ce38f882f68346b1694774fa87e1945b38b57c94f90da34dd560` | MAVROS bridge |
