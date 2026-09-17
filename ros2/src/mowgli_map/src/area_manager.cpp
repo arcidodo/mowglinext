@@ -630,12 +630,32 @@ void MapServerNode::on_set_docking_point(
   // the EKF to dock_pose at boot via the fusion_graph gauge reset, so a
   // bad calibration leaks straight into the map-frame anchor for every
   // subsequent session. Reject unless ALL conditions hold:
-  //   (1) firmware reports is_charging=true (robot physically on dock)
+  //   (1) firmware reports is_charging=true (robot physically on dock) —
+  //       EXCEPT for a MOTION-sourced call with an explicit (not
+  //       GPS-averaged) position, see below
   //   (2) GPS sample fresh and σ(xy) ≤ dock_set_gps_accuracy_max_m_
   //   (3) EKF yaw converged on the recent rolling window
-  //
+  using SetDockReq = mowgli_interfaces::srv::SetDockingPoint::Request;
+
   // (1) — is_charging gate. Refuse if the last /hardware_bridge/status was
-  // not charging or is older than dock_set_status_max_age_s_.
+  // not charging or is older than dock_set_status_max_age_s_ — UNLESS this
+  // is a MOTION-sourced call carrying an explicit position
+  // (use_gps_position=false). That exact combination is how the one-click
+  // dock calibration's pre-reverse capture persists (mowglinext#446): it
+  // deliberately fires AFTER the robot has already reversed off the dock to
+  // measure a fresh COG-derived yaw, so requiring is_charging=true here
+  // would reject every such call unconditionally (which is exactly what
+  // happened before this carve-out existed). The position itself was
+  // already captured under VERIFIED on-dock conditions earlier in that same
+  // run (calibrate_imu_yaw_node's wait_for_dock_position(), averaged over
+  // recent RTK-Fixed samples while still on the dock) — this call is not
+  // reading anything live off the (now absent) physical dock contact, so
+  // the on-dock check has nothing left to protect here. Every OTHER
+  // combination — use_gps_position=true's live on-dock GPS averaging,
+  // PRESERVE, manual REQUEST — keeps this gate exactly as before.
+  const bool is_motion_with_explicit_position =
+      req->yaw_source == SetDockReq::MOTION && !req->use_gps_position;
+  if (!is_motion_with_explicit_position)
   {
     const double max_age = get_parameter("dock_set_status_max_age_s").as_double();
     const double status_age = (last_status_time_.nanoseconds() == 0)
@@ -794,7 +814,7 @@ void MapServerNode::on_set_docking_point(
   // (manual map-drag / settings edit — never circular). MOTION takes the
   // RTK-gated, COG-derived yaw_rad from the one-click dock-calibration action
   // — the ONLY non-circular way to correct a stale dock heading (task #45).
-  using SetDockReq = mowgli_interfaces::srv::SetDockingPoint::Request;
+  // (SetDockReq aliased once, above gate (1).)
   const auto preserved_orientation = docking_pose_.orientation;
   docking_pose_ = req->docking_pose;  // request position (+ request orientation for REQUEST)
   const char* yaw_src_desc = "request";
