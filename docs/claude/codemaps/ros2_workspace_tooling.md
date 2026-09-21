@@ -207,6 +207,6 @@ docker compose -f docker/docker-compose.simulation.yaml up dev-sim   # then: exe
 
 ## Generated & vendored — do not hand-edit
 - `ros2/src/opennav_coverage/` — upstream `open-navigation/opennav_coverage` submodule @ `d6e41a29` (`main`); only `opennav_coverage_msgs` is ever linked/built; the 5 server subpackages are COLCON_IGNORE'd by untracked markers (see CLAUDE.md "Do NOT use the upstream `opennav_coverage` server").
-- `ros2/src/external/universal-gnss/` — `mowglinext/universal-gnss` fork submodule @ `ab32f673` (branch `main`, tracking `Pepeuch/universal-gnss` main); revert `.gitmodules` to `pepeuch/universal-gnss` directly once the fork is no longer needed. Top level: `gnss_core/ gnss_driver/ gnss_ntrip/ gnss_protocols/ gnss_ros2/ gnss_tools/ gnss_transport/ docs/ examples/ testdata/ MOWGLINEXT_TODO.md`.
+- `ros2/src/external/universal-gnss/` — `Pepeuch/universal-gnss` submodule @ `9f027965` (branch `main`; `.gitmodules` points at Pepeuch directly, the old mowglinext fork is no longer used). Top level: `gnss_core/ gnss_driver/ gnss_ntrip/ gnss_protocols/ gnss_ros2/ gnss_tools/ gnss_transport/ docs/ examples/ testdata/ MOWGLINEXT_TODO.md`.
 - `/ros2_ws/src/*` symlinks, `build/ install/ log/`, `maps_backup/` — produced by `sync_workspace_packages.sh` / colcon / `make backup-maps`; gitignored.
 - `docker/logs/mow_sessions/*.jsonl` — session recordings written by `mow_session_monitor.py`; gitignored (`.gitignore` L64-65, only `.gitkeep` is force-tracked). The ad-hoc `.py`/`.md` analysis files sitting next to them ARE tracked.
