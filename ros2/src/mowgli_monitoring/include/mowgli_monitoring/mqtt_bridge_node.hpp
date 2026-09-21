@@ -89,10 +89,14 @@
  * ("online"/LWT) and alive the whole time, and behavior_tree_node's own
  * publish is fresh (confirmed via a brand-new `ros2 topic echo` subscriber
  * getting live data at the same moment) — yet <prefix>/high_level_status
- * keeps republishing old data. Root cause unconfirmed; a full host reboot
- * always clears it, which is consistent with (but does not prove) a stuck
- * long-lived DDS reader rather than anything wrong in behavior_tree_node or
- * in this node's own publish logic (see is_high_level_status_stale()).
+ * keeps republishing old data. A full host reboot always clears it. A
+ * 2026-09-21 capture of ROS and the broker side by side found a different
+ * cause for at least that occurrence: this node's own outgoing MQTT queue.
+ * The network loop was driven only from the publish_rate timer, so
+ * <prefix>/high_level_status left at ~0.57 msg/s against ~1 msg/s produced
+ * and lagged more and more (9+ min after 16 min); net_timer_ now drives it at
+ * 20 Hz. A stuck DDS reader is still possible, so the watchdog below stays
+ * (see is_high_level_status_stale()).
  * Since behavior_tree_node republishes this topic unconditionally at least
  * once a second regardless of state, on_timer() recreates JUST this one
  * subscription (create_high_level_status_subscription()) whenever more than
@@ -109,7 +113,7 @@
  * mqtt_password      string  ""              node is run standalone (e.g. in tests).
  * mqtt_client_id     string  "mowgli_ros2"
  * mqtt_topic_prefix  string  "mowgli"
- * publish_rate       double  1.0   Hz — position/gps update rate limit
+ * publish_rate       double  1.0   Hz — max rate of position/gps/status/power/rtk_status
  * use_ssl            bool    false
  * datum_lat          double  0.0   — injected from mowgli_robot.yaml by full_system.launch.py,
  * datum_lon          double  0.0     same as map_server_node/navsat_to_absolute_pose_node; used
@@ -403,6 +407,15 @@ public:
                                          const rclcpp::Time& last_received,
                                          double threshold_s);
 
+  /**
+   * @brief True if a rate-limited topic may publish its pending message now.
+   * @param last_publish Time of the topic's previous publish; the epoch (never
+   *        published) is always due for any sane interval.
+   */
+  static bool is_publish_due(const rclcpp::Time& now,
+                             const rclcpp::Time& last_publish,
+                             double min_interval_s);
+
 private:
   // ---- Initialisation -------------------------------------------------------
 
@@ -454,7 +467,7 @@ private:
   void poll_areas_step(uint32_t index, std::shared_ptr<std::vector<AreaSummary>> collected);
   void publish_areas_if_changed(const std::vector<AreaSummary>& areas);
 
-  // ---- Timer: network loop + rate-limited position/gps -----------------------
+  // ---- Timers: rate-limited publishes (on_timer) + network loop (net_timer_) -----
 
   void on_timer();
 
@@ -487,6 +500,9 @@ private:
   rclcpp::Client<mowgli_interfaces::srv::GetMowingArea>::SharedPtr srv_get_mowing_area_;
 
   rclcpp::TimerBase::SharedPtr timer_;
+  // Drives IMqttClient::spin_once() on its own fast cadence, independent of publish_rate_.
+  rclcpp::TimerBase::SharedPtr net_timer_;
+  static constexpr int kNetworkLoopPeriodMs = 50;
 
   // ---- Parameters -----------------------------------------------------------
 
@@ -507,6 +523,12 @@ private:
   rclcpp::Time last_odom_publish_{0, 0, RCL_ROS_TIME};
   std::optional<sensor_msgs::msg::NavSatFix> pending_gps_{};
   rclcpp::Time last_gps_publish_{0, 0, RCL_ROS_TIME};
+  std::optional<mowgli_interfaces::msg::Status> pending_status_{};
+  rclcpp::Time last_status_publish_{0, 0, RCL_ROS_TIME};
+  std::optional<mowgli_interfaces::msg::Power> pending_power_{};
+  rclcpp::Time last_power_publish_{0, 0, RCL_ROS_TIME};
+  std::optional<mowgli_interfaces::msg::GnssStatus> pending_gnss_status_{};
+  rclcpp::Time last_gnss_status_publish_{0, 0, RCL_ROS_TIME};
 
   // ---- High-level-status subscription watchdog state -------------------------
 
