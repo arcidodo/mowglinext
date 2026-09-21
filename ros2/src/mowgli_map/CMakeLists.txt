@@ -189,6 +189,29 @@ if(BUILD_TESTING)
   )
   target_include_directories(test_map_server PUBLIC ${grid_map_ros_INCLUDE_DIRS})
 
+  # Map replace (GUI "Save map"): fast keepout mask == per-cell definition,
+  # and add_area does no grid work inside the service callback.
+  ament_add_gtest(test_map_replace
+    test/test_map_replace.cpp
+    TIMEOUT 300
+  )
+
+  target_link_libraries(test_map_replace
+    mowgli_map_lib
+  )
+
+  target_link_libraries(test_map_replace
+    ${rclcpp_TARGETS}
+    ${grid_map_core_TARGETS}
+    ${grid_map_ros_LIBRARIES}
+    ${grid_map_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${std_srvs_TARGETS}
+    ${mowgli_interfaces_TARGETS}
+  )
+  target_include_directories(test_map_replace PUBLIC ${grid_map_ros_INCLUDE_DIRS})
+
   ament_add_gtest(test_mow_progress
     test/test_mow_progress.cpp
   )
@@ -238,6 +261,14 @@ if(BUILD_TESTING)
   target_include_directories(test_boundary_classifier PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/include
     ${Boost_INCLUDE_DIRS}
+  )
+
+  # Pure logic, no ROS deps — which gates a SetDockingPoint request must pass.
+  ament_add_gtest(test_dock_set_gates
+    test/test_dock_set_gates.cpp
+  )
+  target_include_directories(test_dock_set_gates PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
   )
 endif()
 
