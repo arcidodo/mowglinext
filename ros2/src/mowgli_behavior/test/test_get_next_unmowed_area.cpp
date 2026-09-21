@@ -714,25 +714,55 @@ TEST_F(GetNextUnmowedAreaTest, CrossHatchPhaseReachesPlannerAndEndSessionAdvance
   executor.add_node(ctx->node);
   factory.registerNodeType<mowgli_behavior::PlanCoverageArea>("PlanCoverageArea");
   areas[0] = {"lawn", false};
-  waitForService();
   ctx->mow_cross_hatch = true;
   auto plan = factory.createTreeFromText(
       "<root BTCPP_format=\"4\"><BehaviorTree ID=\"Test\"><PlanCoverageArea/>"
       "</BehaviorTree></root>",
       blackboard);
+
+  auto dispatchNewRejectedPlannerGoal = [&]() -> bool
+  {
+    const size_t previous_goal_count = goals.size();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    BT::NodeStatus status = BT::NodeStatus::IDLE;
+    bool planner_started = false;
+
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+      status = plan.tickOnce();
+      // PlanCoverageArea reaches RUNNING only after its own lazily-created
+      // get_mowing_area client sees the service and sends the request. A
+      // discovery miss returns FAILURE, so retry it while spinning instead
+      // of assuming a separate probe client's readiness applies to it.
+      planner_started = planner_started || status == BT::NodeStatus::RUNNING;
+      executor.spin_some();
+      if (planner_started && status == BT::NodeStatus::FAILURE &&
+          goals.size() > previous_goal_count)
+      {
+        break;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+
+    EXPECT_TRUE(planner_started);
+    EXPECT_EQ(status, BT::NodeStatus::FAILURE);  // fake action server rejects
+    EXPECT_EQ(goals.size(), previous_goal_count + 1);
+    return planner_started && status == BT::NodeStatus::FAILURE &&
+           goals.size() == previous_goal_count + 1;
+  };
+
   for (double angle : {-1.0, 25.0})
   {
     blackboard->set("mow_angle_deg", angle);
-    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);  // fake server rejects
-    ASSERT_FALSE(goals.empty());
+    ASSERT_TRUE(dispatchNewRejectedPlannerGoal());
     EXPECT_DOUBLE_EQ(goals.back().mow_angle_deg, angle);
     EXPECT_FALSE(goals.back().perpendicular);
     ctx->cross_hatch[0].used = true;  // simulate coverage having started
     auto end = makeEndSessionTree();
     EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
-    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);
+    ASSERT_TRUE(dispatchNewRejectedPlannerGoal());
     EXPECT_TRUE(goals.back().perpendicular);
-    EXPECT_EQ(tickToCompletion(plan), BT::NodeStatus::FAILURE);  // same-session replan
+    ASSERT_TRUE(dispatchNewRejectedPlannerGoal());  // same-session replan
     EXPECT_TRUE(goals.back().perpendicular);
     ctx->cross_hatch[0].used = true;
     EXPECT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
@@ -762,7 +792,10 @@ TEST_F(GetNextUnmowedAreaTest, SelectedAreaOnlyAdvancesThatArea)
 TEST_F(GetNextUnmowedAreaTest, OrientationServiceEditsNextWithoutChangingActivePlan)
 {
   using Service = mowgli_interfaces::srv::CoverageOrientation;
-  ctx->coverage_resume_path = ::testing::TempDir() + "/cross_hatch_service.txt";
+  const auto path = std::string(::testing::TempDir()) + "/cross_hatch_service.txt";
+  std::filesystem::remove_all(path);
+  std::filesystem::remove_all(path + ".tmp");
+  ctx->coverage_resume_path = path;
   ctx->mow_cross_hatch = true;
   ctx->node->declare_parameter<double>("mow_angle_deg", 25.0);
   ctx->cross_hatch[2].begin(true);
@@ -788,13 +821,13 @@ TEST_F(GetNextUnmowedAreaTest, OrientationServiceEditsNextWithoutChangingActiveP
     return future.get();
   };
   auto status = call();
-  ASSERT_TRUE(status->success);
+  ASSERT_TRUE(status->success) << status->message;
   EXPECT_TRUE(status->next_perpendicular);
   EXPECT_DOUBLE_EQ(status->base_angle_deg, 25.0);
   req->set_next = true;
   req->perpendicular = false;
   status = call();
-  ASSERT_TRUE(status->success);
+  ASSERT_TRUE(status->success) << status->message;
   EXPECT_TRUE(status->current_active);
   EXPECT_FALSE(status->current_perpendicular);
   EXPECT_FALSE(status->next_perpendicular);
@@ -803,8 +836,7 @@ TEST_F(GetNextUnmowedAreaTest, OrientationServiceEditsNextWithoutChangingActiveP
   EXPECT_FALSE(ctx->cross_hatch[2].begin(true));
   // Persistence failure must not pretend the requested change was saved.
   req->perpendicular = true;
-  const auto path = ctx->coverage_resume_path;
-  std::filesystem::create_directory(path + ".tmp");
+  ASSERT_TRUE(std::filesystem::create_directory(path + ".tmp"));
   EXPECT_FALSE(call()->success);
   EXPECT_FALSE(ctx->cross_hatch[2].next());
   BTContext disk;
@@ -1024,4 +1056,176 @@ TEST_F(GetNextUnmowedAreaTest, OrientationQueueIsBoundedAndDestructionRepliesToD
   ASSERT_EQ(multi.spin_until_future_complete(futures.front(), std::chrono::seconds(5)),
             rclcpp::FutureReturnCode::SUCCESS);
   EXPECT_FALSE(futures.front().get()->success);
+}
+
+// ---------------------------------------------------------------------------
+// Fleet coordination (docs/MULTI_ROBOT.md): areas assigned to another fleet
+// member are skipped, the scan can start at a preferred index and wrap, a
+// yielded pass is not charged, and FollowStrip yields when its area is taken.
+// ---------------------------------------------------------------------------
+
+TEST_F(GetNextUnmowedAreaTest, FleetExcludedAreaIsSkippedLikeACompletedOne)
+{
+  areas[0] = {"north", false};
+  areas[1] = {"south", false};
+  waitForService();
+  ctx->fleet_excluded_areas = {0u};
+
+  auto tree = makeTree(/*max_areas=*/5);
+  ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 1u) << "area 0 belongs to another robot";
+  EXPECT_FALSE(ctx->coverage_all_complete);
+}
+
+TEST_F(GetNextUnmowedAreaTest, OnlyExcludedAreasLeftEndsAsMowingComplete)
+{
+  areas[0] = {"north", false};
+  waitForService();
+  ctx->fleet_excluded_areas = {0u};
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+  EXPECT_TRUE(ctx->coverage_all_complete)
+      << "nothing left for THIS robot is a clean completion (dock), not a config error";
+}
+
+TEST_F(GetNextUnmowedAreaTest, FleetPreferredStartRotatesTheScanAndWraps)
+{
+  areas[0] = {"a", false};
+  areas[1] = {"b", false};
+  areas[2] = {"c", false};
+  waitForService();
+  ctx->fleet_preferred_start = 2u;
+
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    uint32_t selected = 99;
+    ASSERT_TRUE(blackboard->get("area_index", selected));
+    EXPECT_EQ(selected, 2u) << "the scan starts at the preferred index";
+  }
+  ctx->completed_areas.insert(2u);
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    uint32_t selected = 99;
+    ASSERT_TRUE(blackboard->get("area_index", selected));
+    EXPECT_EQ(selected, 0u) << "past the last area the scan wraps to the lower indices";
+  }
+  ctx->completed_areas.insert(0u);
+  ctx->completed_areas.insert(1u);
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::FAILURE);
+    EXPECT_TRUE(ctx->coverage_all_complete) << "everything done after the wrap";
+  }
+}
+
+TEST_F(GetNextUnmowedAreaTest, FleetPreferredStartBeyondTheLastAreaWrapsToZero)
+{
+  areas[0] = {"a", false};
+  areas[1] = {"b", false};
+  waitForService();
+  ctx->fleet_preferred_start = 3u;  // rank 3 in a fleet larger than the lawn
+
+  auto tree = makeTree(/*max_areas=*/5);
+  ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 0u);
+}
+
+TEST_F(GetNextUnmowedAreaTest, TargetedRunIgnoresTheFleetRotation)
+{
+  areas[0] = {"a", false};
+  areas[1] = {"b", false};
+  areas[2] = {"c", false};
+  waitForService();
+  ctx->fleet_preferred_start = 2u;
+  ctx->target_area_index = 1;
+
+  auto tree = makeTree(/*max_areas=*/5);
+  ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  uint32_t selected = 99;
+  ASSERT_TRUE(blackboard->get("area_index", selected));
+  EXPECT_EQ(selected, 1u) << "'mow only this area' wins over the fleet rotation";
+}
+
+TEST_F(GetNextUnmowedAreaTest, FleetYieldedPassIsNotChargedToTheNoProgressBudget)
+{
+  areas[0] = {"lawn", false};
+  waitForService();
+
+  {
+    auto tree = makeTree(/*max_areas=*/5);
+    ASSERT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+    ASSERT_EQ(ctx->area_attempt_count[0u], 1u);
+  }
+  // FollowStrip yielded area 0 to a peer, and the peer has since released it.
+  ctx->fleet_yielded_areas.insert(0u);
+
+  auto tree = makeTree(/*max_areas=*/5);
+  EXPECT_EQ(tickToCompletion(tree), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->current_area, 0);
+  EXPECT_EQ(ctx->area_attempt_count[0u], 1u) << "a yielded pass never had a chance to progress";
+  EXPECT_EQ(ctx->area_guard_halt_count[0u], 1u) << "it rides the guard-halt exemption";
+  EXPECT_TRUE(ctx->fleet_yielded_areas.empty()) << "consumed by the dispatch";
+}
+
+TEST_F(GetNextUnmowedAreaTest, EndSessionClearsFleetYieldsButKeepsExclusions)
+{
+  ctx->fleet_yielded_areas.insert(3u);
+  ctx->fleet_excluded_areas.insert(4u);
+
+  auto end = makeEndSessionTree();
+  ASSERT_EQ(end.tickOnce(), BT::NodeStatus::SUCCESS);
+
+  EXPECT_TRUE(ctx->fleet_yielded_areas.empty());
+  EXPECT_EQ(ctx->fleet_excluded_areas.count(4u), 1u)
+      << "exclusions are owned by the fleet coordinator, not by the session";
+}
+
+TEST_F(GetNextUnmowedAreaTest, FollowStripYieldsWhenItsAreaIsAssignedToAPeer)
+{
+  using Follow = mowgli_behavior::FollowStrip::Nav2FollowPath;
+  auto action = rclcpp_action::create_server<Follow>(
+      server_node,
+      "/follow_path",
+      [](const auto&, const auto&)
+      {
+        return rclcpp_action::GoalResponse::REJECT;
+      },
+      [](const auto&)
+      {
+        return rclcpp_action::CancelResponse::ACCEPT;
+      },
+      [](const auto&) {});
+  ctx->current_area = 2;
+  ctx->tf_buffer = std::make_shared<tf2_ros::Buffer>(ctx->node->get_clock());
+  nav_msgs::msg::Path path;
+  path.header.frame_id = "map";
+  path.poses.resize(2);
+  path.poses[1].pose.position.x = 1.0;
+  ctx->current_strip_subpaths = {path};
+  factory.registerNodeType<mowgli_behavior::FollowStrip>("FollowStrip");
+  auto tree = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree ID=\"Test\"><FollowStrip/></BehaviorTree></root>",
+      blackboard);
+
+  // A normal pass starts (RUNNING), then the coordinator hands area 2 to a peer.
+  ASSERT_EQ(tree.tickOnce(), BT::NodeStatus::RUNNING);
+  ctx->fleet_excluded_areas = {2u};
+  EXPECT_EQ(tree.tickOnce(), BT::NodeStatus::SUCCESS) << "the pass ends, it is not a failure";
+  EXPECT_EQ(ctx->fleet_yielded_areas.count(2u), 1u);
+  EXPECT_EQ(ctx->completed_areas.count(2u), 0u) << "yielding never completes an area";
+
+  // Already excluded before the pass starts: no goal is sent at all.
+  ctx->fleet_yielded_areas.clear();
+  auto tree2 = factory.createTreeFromText(
+      "<root BTCPP_format=\"4\"><BehaviorTree ID=\"Test\"><FollowStrip/></BehaviorTree></root>",
+      blackboard);
+  EXPECT_EQ(tree2.tickOnce(), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(ctx->fleet_yielded_areas.count(2u), 1u);
 }

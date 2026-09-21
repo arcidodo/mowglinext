@@ -4,8 +4,6 @@
 	branch = main
 [submodule "ros2/src/external/universal-gnss"]
 	path = ros2/src/external/universal-gnss
-	# Follows Pepeuch/universal-gnss directly. The mowglinext fork's main had gone
-	# stale (its fixes for issue #395 are upstream in Pepeuch main), and fixes such as
-	# Pepeuch/universal-gnss#7 (frozen lat/lon with NMEA-only receivers) land there first.
+	# The gitlink pins a validated Universal GNSS release commit. Normal
+	# submodule updates use that exact commit, not a moving branch head.
 	url = https://github.com/Pepeuch/universal-gnss.git
-	branch = main
