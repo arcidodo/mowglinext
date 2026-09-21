@@ -222,7 +222,6 @@ TEST_F(DiagnosticsTest, AllDiagnosticCategoriesPresent)
       node->check_gps(t),
       node->check_odometry(t),
       node->check_motors(),
-      node->check_path_tracking(t),
   };
 
   const std::vector<std::string> expected_names = {
@@ -234,7 +233,6 @@ TEST_F(DiagnosticsTest, AllDiagnosticCategoriesPresent)
       "GPS",
       "Odometry",
       "Motors",
-      "Path Tracking",
   };
 
   ASSERT_EQ(statuses.size(), expected_names.size());
@@ -259,7 +257,6 @@ TEST_F(DiagnosticsTest, AllCategoriesHaveHardwareId)
       node->check_gps(t),
       node->check_odometry(t),
       node->check_motors(),
-      node->check_path_tracking(t),
   };
 
   for (const auto& s : statuses)
@@ -282,7 +279,6 @@ TEST_F(DiagnosticsTest, CategoryLevelsAreValidDiagnosticLevels)
       node->check_gps(t),
       node->check_odometry(t),
       node->check_motors(),
-      node->check_path_tracking(t),
   };
 
   for (const auto& s : statuses)
@@ -353,27 +349,4 @@ TEST_F(DiagnosticsTest, LevelNameUnknownForOutOfRangeValue)
   // Values outside OK/WARN/ERROR/STALE should return "UNKNOWN".
   EXPECT_EQ(level_name(99u), "UNKNOWN");
   EXPECT_EQ(level_name(10u), "UNKNOWN");
-}
-
-// ===========================================================================
-// Path tracking (ROS 2 Lyrical controller_server tracking_feedback)
-// ===========================================================================
-
-TEST_F(DiagnosticsTest, PathTrackingIsOkAndIdleBeforeAnyFollowPathGoal)
-{
-  // A parked or docked robot has no FollowPath goal running, so the controller
-  // server publishes nothing. That must never raise an operator-visible alert.
-  auto node = make_node("_tracking_idle");
-  const auto status = node->check_path_tracking(node->now());
-
-  EXPECT_EQ(status.name, "Path Tracking");
-  EXPECT_EQ(status.level, DiagLevel::OK);
-  EXPECT_NE(status.message.find("Idle"), std::string::npos);
-}
-
-TEST_F(DiagnosticsTest, PathTrackingReportsNoSamplesBeforeTheFirstGoal)
-{
-  auto node = make_node("_tracking_empty");
-  EXPECT_FALSE(node->state().tracking_ever_received);
-  EXPECT_FALSE(node->state().path_tracking.HasSamples());
 }

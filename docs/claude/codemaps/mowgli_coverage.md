@@ -92,7 +92,7 @@ Declared in `on_configure` (`coverage_server.cpp:53-105`). "Injected" = overwrit
 
 | Param | Node default | Injected from (`mowgli_robot.yaml` key → launch line) | Read |
 |-------|--------------|-------------------------------------------------------|------|
-| `robot_width` | 0.40 (node fallback; shipped launch injection is 0.45) | `chassis_width` → `navigation.launch.py:930` (semantic only + footprint check `coverage_server.cpp:635-636`) | configure |
+| `robot_width` | 0.40 | `chassis_width` → `navigation.launch.py:930` (semantic only + footprint check `coverage_server.cpp:635-636`) | configure |
 | `operation_width` | 0.18 (yaml 0.16) | `max(0.05, tool_width − swath_overlap)` → `:924`; template `tool_width` `:195`, `swath_overlap` `:405` | configure |
 | `default_headland_width` | 0.20 | `headland_width` (template `:344`) → `:931`; only used when `num_headland_passes == 0` (AUTO) | configure |
 | `num_headland_passes` | 0 | `num_headland_passes` (template `:374`, default 5) → `:932` **unclamped** (`<0` NONE / `0` AUTO / `>0` FORCED) | configure (restart to change) |
@@ -102,7 +102,7 @@ Declared in `on_configure` (`coverage_server.cpp:53-105`). "Injected" = overwrit
 | `min_turning_radius` | 0.20 | `min_turning_radius` (template `:416`) clamped [0.10, 0.50] `:790` → `:944` | LIVE |
 | `connector_turn_radius` | 0.20 | `connector_turn_radius` — **no template key**; launch default `:403`, override read `:591-592`, clamped [floor, 0.50] `:791-792` → `:948` | LIVE |
 | `connector_max_headland_passes` | 0 | `connector_max_headland_passes` (template, issue #497) → `navigation.launch.py`; passed through unclamped, `coverage_planning.cpp` clamps to `[0, n_rings]` | LIVE |
-| `obstacle_margin` | 0.0 | `obstacle_margin` (template 0.389) floored at `robot_config_util.planning_obstacle_margin_floor`, capped 1.0; server re-clamps `coverage_server.cpp:473-474` | LIVE |
+| `obstacle_margin` | 0.0 | `obstacle_margin` (template `:665`, 0.2) clamped [0, 1] `:940`; server re-clamps `coverage_server.cpp:473-474` | LIVE |
 | `action_server_result_timeout` | 15.0 | not injected | configure |
 | `use_sim_time` | false | `nav2_params_base.yaml:1152` | configure |
 
@@ -202,8 +202,8 @@ CI: `.github/workflows/ros2-ci.yml` — F2C v3 built from source at SHA `884d895
 - **`operation_width` = `tool_width − swath_overlap`** (`navigation.launch.py:924`) must stay coupled to
   `map_server.tool_width` (`full_system.launch.py:421-428`) — CLAUDE.md Invariant 6; both fallbacks import
   `robot_config_util.DEFAULT_TOOL_WIDTH_M` (`robot_config_util.py:48`).
-- **`obstacle_margin`** is applied HERE only (holes, `bufferRingOutward`). `map_server`'s keepout band is the
-  separately derived `keepout_obstacle_margin` (body half-width) — see `robot_config_util`'s obstacle-margin block.
+- **`obstacle_margin`** is applied twice: here on holes (`bufferRingOutward`) and in `map_server`'s keepout
+  mask (`full_system.launch.py:402-405`). Change the clamp band in both.
 - **`chassis_safety_inset`** also feeds BT bypass arcs (`full_system.launch.py:390-398`, fallback
   `chassis_width/2`) while `navigation.launch.py:615-623` falls back to 0.0 — the template value (0.2)
   normally masks the disagreement.

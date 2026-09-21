@@ -9,16 +9,6 @@ bool is_navigation_area
 # user-drawn keepout. See MapObstacleInfo.msg.
 MapObstacleInfo[] obstacle_info
 
-# PENDING proposals for this area (today: wheel-slip dig reports, SOURCE_DIG).
-# A proposal is NOT applied: it is absent from `obstacles`, from the keepout
-# mask, from the classification layer and from areas.dat, so it can never
-# block planning and never becomes a hole in a coverage plan. It exists only
-# so the operator can review it: ~/promote_obstacle{pending_id} applies and
-# persists it (it then moves to `obstacles`), ~/discard_obstacle drops it.
-# `proposed_obstacle_info` is index-aligned with `proposed_obstacles`.
-geometry_msgs/Polygon[] proposed_obstacles
-MapObstacleInfo[] proposed_obstacle_info
-
 # Stable, persistent area identifier (mowglinext#637). Survives reorders,
 # edits or deletes of OTHER areas - unlike the positional index used by
 # GetMowingArea/StartInArea, which the GUI's edit/delete flow (a full

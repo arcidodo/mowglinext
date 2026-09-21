@@ -57,13 +57,11 @@ BT::NodeStatus SetMowerEnabled::tick()
     return BT::NodeStatus::FAILURE;
   }
   const bool enabled = res.value();
-  // Selection records tree intent even if discovery/send is unavailable; a
-  // retry must keep the same direction, and an undelivered OFF still wins.
-  const auto command = ctx->blade_direction.forMowerCommand(enabled, ctx->blade_auto_reverse);
 
   if (!client_)
   {
-    client_ = ctx->bladeClient();
+    client_ = ctx->node->create_client<mowgli_interfaces::srv::MowerControl>(
+        "/hardware_bridge/mower_control");
   }
 
   if (!waitForService(client_, ctx->node))
@@ -75,8 +73,8 @@ BT::NodeStatus SetMowerEnabled::tick()
   }
 
   auto request = std::make_shared<mowgli_interfaces::srv::MowerControl::Request>();
-  request->mow_enabled = command.enabled;
-  request->mow_direction = command.direction;
+  request->mow_enabled = enabled ? 1u : 0u;
+  request->mow_direction = 0u;
 
   // Fire-and-forget: the firmware is the safety authority for the blade.
   // It has its own lift/tilt/emergency checks and will refuse or stop the
@@ -85,9 +83,8 @@ BT::NodeStatus SetMowerEnabled::tick()
   (void)future;
 
   RCLCPP_INFO(ctx->node->get_logger(),
-              "SetMowerEnabled: requested mow_enabled=%s, direction=%u",
-              command.enabled ? "true" : "false",
-              request->mow_direction);
+              "SetMowerEnabled: requested mow_enabled=%s",
+              enabled ? "true" : "false");
 
   return BT::NodeStatus::SUCCESS;
 }
@@ -204,6 +201,43 @@ BT::NodeStatus WaitForGpsFix::onRunning()
 void WaitForGpsFix::onHalted()
 {
   // Nothing to clean up.
+}
+
+// ---------------------------------------------------------------------------
+// DiscardNearbyDigKeepouts
+// ---------------------------------------------------------------------------
+BT::NodeStatus DiscardNearbyDigKeepouts::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  if (!client_)
+  {
+    // helper_node is spun by its own executor, so waiting on the future here
+    // does not deadlock the tree's node (same pattern as Nav2Active).
+    client_ = ctx->helper_node->create_client<std_srvs::srv::Trigger>(
+        "/map_server_node/discard_dig_keepouts_near_robot");
+  }
+  // No service_is_ready() gate: it is unreliable on Cyclone/ARM (see
+  // NavigateInsideBoundary). Send, then bound the wait on the reply.
+  auto request = std::make_shared<std_srvs::srv::Trigger::Request>();
+  auto future = client_->async_send_request(request);
+  const auto deadline =
+      std::chrono::steady_clock::now() + std::chrono::duration<double>(kAckTimeoutSec);
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    if (future.wait_for(std::chrono::milliseconds(20)) == std::future_status::ready)
+    {
+      auto resp = future.get();
+      RCLCPP_INFO(ctx->node->get_logger(),
+                  "DiscardNearbyDigKeepouts: %s",
+                  resp ? resp->message.c_str() : "(null response)");
+      return BT::NodeStatus::SUCCESS;
+    }
+  }
+  RCLCPP_WARN(ctx->node->get_logger(),
+              "DiscardNearbyDigKeepouts: no reply from map_server within %.1f s - going home "
+              "with the dig keepouts still in place",
+              kAckTimeoutSec);
+  return BT::NodeStatus::SUCCESS;
 }
 
 // ---------------------------------------------------------------------------

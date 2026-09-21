@@ -11,7 +11,6 @@ import {useIsMobile} from "../hooks/useIsMobile";
 import {useHighLevelStatus} from "../hooks/useHighLevelStatus.ts";
 import {usePower} from "../hooks/usePower.ts";
 import {useStatus} from "../hooks/useStatus.ts";
-import {BladeDirectionDisplay} from "../components/BladeDirectionDisplay.tsx";
 import {useGnssStatus} from "../hooks/useGnssStatus.ts";
 import {useEmergency} from "../hooks/useEmergency.ts";
 import {useSettings} from "../hooks/useSettings.ts";
@@ -33,7 +32,6 @@ import {LiveMapMini} from "../concept/components/LiveMapMini.tsx";
 import type {MiniArea, MiniProgress} from "../concept/components/LiveMapMini.tsx";
 import {ProgressRibbon} from "../concept/components/ProgressRibbon.tsx";
 import {SoilWetBanner} from "../components/dashboard/SoilWetBanner.tsx";
-import {DigEscalationBanner} from "../components/dashboard/DigEscalationBanner.tsx";
 import {WeatherChip} from "../concept/components/WeatherChip.tsx";
 import {useWeather} from "../hooks/useWeather.ts";
 import {NoiseTexture} from "../concept/components/NoiseTexture.tsx";
@@ -333,10 +331,6 @@ export const MowgliNextPage = () => {
           />
         </motion.header>
 
-        {/* Repeat-dig escalation: hardware_bridge halted the mission — the
-            operator needs to know why nothing is moving and how to clear it */}
-        <DigEscalationBanner variants={riseFade}/>
-
         {/* IrriSense: the garden is wet — warn before anyone starts a mow */}
         <SoilWetBanner variants={riseFade}/>
 
@@ -570,7 +564,7 @@ function TilesRow({data}: {data: ReturnType<typeof useMowerData>}) {
       <StatTile label="GPS" value={`${Math.round(data.gps)}`} unit="%"
                 hint={data.gpsLabel} accent="cyan" icon={<Wifi size={14}/>}/>
       <StatTile label={t('mowgliNextPage.blades')} value={data.rpm > 0 ? Math.round(data.rpm).toString() : t('mowgliNextPage.bladesOff')}
-                unit={data.rpm > 0 ? 'rpm' : ''} hint={<>{data.bladeCurrent.toFixed(1)} A · <BladeDirectionDisplay compact/></>}
+                unit={data.rpm > 0 ? 'rpm' : ''} hint={`${data.bladeCurrent.toFixed(1)} A`}
                 accent="amber" icon={<Sparkles size={14}/>}/>
       <StatTile label={t('mowgliNextPage.motor')} value={data.motorTemp.toFixed(0)} unit="°c"
                 hint={`ESC ${data.escTemp.toFixed(0)} °C`}
@@ -588,7 +582,7 @@ interface StatTileProps {
   label: string;
   value: string;
   unit: string;
-  hint: ReactNode;
+  hint: string;
   accent: "lime" | "cyan" | "amber" | "rose";
   icon: React.ReactNode;
 }

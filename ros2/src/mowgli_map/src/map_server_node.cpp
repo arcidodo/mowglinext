@@ -59,20 +59,18 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   map_size_y_ = declare_parameter<double>("map_size_y", 20.0);
   map_frame_ = declare_parameter<std::string>("map_frame", "map");
   tool_width_ = declare_parameter<double>("tool_width", 0.18);
-  // Wheel-slip dig proposal (see on_dig_event). A dig is recorded as a PENDING
-  // proposal only - not in the mask, not a coverage hole, not in areas.dat -
-  // until the operator accepts it.
+  // Wheel-slip dig keepout (see on_dig_event). The keepout is stamped as a
+  // PENDING proposal - live in the mask for this session, never written to
+  // areas.dat until the operator accepts it.
   //
-  // dig_proposal_radius: the proposal is sized to the PHYSICAL dig (the two
-  // drive-wheel ruts), not to the chassis — see internal_helpers.hpp. DERIVED
-  // from the wheel geometry by full_system.launch.py
-  // (robot_config_util.dig_proposal_radius); the default here only serves
-  // tests and ad-hoc runs. It replaces `dig_obstacle_size` (0.60 m, one chassis
-  // length), which existed only because the polygon used to be stamped as a
-  // session keepout and therefore had to contain the body.
+  // Size: it used to default to one tool width (0.18 m), which is NARROWER
+  // THAN THE CHASSIS (0.60 m x 0.40 m footprint). Issue #500 recorded the
+  // consequence: 3 dig latches in 18.4 s within 0.13 m - the escape reverses
+  // and the controller drives the body straight back over a keepout the body
+  // does not fit around. Default is now kDefaultDigKeepoutSizeM, one chassis
+  // length, so routing around the patch actually clears it.
   dig_obstacle_enabled_ = declare_parameter<bool>("dig_obstacle_enabled", true);
-  dig_proposal_radius_m_ =
-      declare_parameter<double>("dig_proposal_radius", kFallbackDigProposalRadiusM);
+  dig_obstacle_size_ = declare_parameter<double>("dig_obstacle_size", kDefaultDigKeepoutSizeM);
   yaw_convergence_threshold_rad_ =
       declare_parameter<double>("yaw_convergence_threshold_rad", 0.00873);  // 0.5°
   yaw_convergence_window_s_ = declare_parameter<double>("yaw_convergence_window_s", 5.0);
@@ -103,24 +101,6 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   // the legacy keepout_nav_margin_ free band governs. See the field note on the
   // 0.32 m concave-boundary excursion (project_coverage_boundary_excursion).
   lethal_outside_areas_ = declare_parameter<bool>("lethal_outside_areas", true);
-  // INJECTED by full_system.launch.py, which floors it at the live chassis
-  // CIRCUMSCRIBED RADIUS (robot_config_util.chassis_circumscribed_radius,
-  // 0.597 m on the shipped chassis) — the band is the room the BODY has to
-  // overhang the recorded line, and chassis_safety_inset is 0, so the outermost
-  // coverage pass rides ON that line: the CENTRE is on the line and the
-  // footprint reaches up to that radius outside it in any orientation. Sideways
-  // that is only the half-width (0.275), but at a row END the body noses
-  // chassis_center_x + chassis_length/2 + margin = 0.53 m past the line.
-  // The literal below is only the standalone-run fallback; it was sized when
-  // the chassis was 0.40 m wide and does NOT track the GUI's chassis presets
-  // (up to 0.535 m wide) on its own.
-  //
-  // TRADE-OFF (watch it): a wider band is also a wider region the planner will
-  // route through OUTSIDE the recorded perimeter — the small value below is
-  // what fixed the 0.32 m concave-boundary excursion noted under
-  // lethal_outside_areas_ above. The injected floor also exceeds
-  // lethal_boundary_margin_m_ (0.5 m), so the planner's lethal wall no longer
-  // sits strictly inside that e-stop tripwire.
   enforce_boundary_margin_m_ = declare_parameter<double>("enforce_boundary_margin_m", 0.40);
   // Two-tier boundary: if the robot is outside every defined area, we
   // publish /boundary_violation (BT attempts a recovery back inside). If
@@ -186,18 +166,10 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
   chassis_width_m_ = declare_parameter<double>("chassis_width", 0.40);
   bypass_safety_margin_m_ = declare_parameter<double>("bypass_safety_margin_m", 0.05);
   bypass_max_length_m_ = declare_parameter<double>("max_obstacle_avoidance_distance", 2.0);
-  // LETHAL band around obstacle polygons in the keepout mask = the body model
-  // of the mask's point-check consumer (Smac 2D), counted ONCE: the mask is not
-  // inflated downstream. full_system.launch.py injects the derived value
-  // (robot_config_util.keepout_obstacle_margin). Negative = "derive": an
-  // isolated run falls back to this node's own chassis_width / 2 rather than
-  // to a literal that goes stale when the chassis is edited.
-  // It is NOT coverage_server.obstacle_margin (see the member's comment).
-  const double keepout_margin_param = declare_parameter<double>("keepout_obstacle_margin", -1.0);
-  keepout_obstacle_margin_m_ =
-      std::clamp(keepout_margin_param < 0.0 ? chassis_width_m_ * 0.5 : keepout_margin_param,
-                 0.0,
-                 1.0);
+  // Extra LETHAL band around drawn obstacle polygons in the keepout mask.
+  // Same key drives coverage_server's F2C hole buffering (injected at launch
+  // from mowgli_robot.yaml.obstacle_margin) — keep the two in lockstep.
+  obstacle_margin_m_ = std::clamp(declare_parameter<double>("obstacle_margin", 0.15), 0.0, 1.0);
 
   // Dock body (physical structure the robot cannot drive into). Cells
   // inside are marked OBSTACLE_PERMANENT — F2C strips stop at the body
@@ -356,10 +328,16 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
         double north = 0.0;
         mowgli_interfaces::wgs84::ToEnu(
             msg->latitude, msg->longitude, datum_lat_, datum_lon_, east, north);
-        push_dock_antenna_sample(east, north);
+        const rclcpp::Time t = now();
+        std::lock_guard<std::mutex> lk(recent_gps_antenna_mutex_);
+        recent_gps_antenna_enu_.emplace_back(t, east, north);
+        while (!recent_gps_antenna_enu_.empty() &&
+               (t - std::get<0>(recent_gps_antenna_enu_.front())).seconds() >
+                   dock_set_gps_avg_window_s_)
+        {
+          recent_gps_antenna_enu_.pop_front();
+        }
       });
-  dock_antenna_capture_ttl_s_ =
-      declare_parameter<double>("dock_antenna_capture_ttl_s", dock_antenna_capture_ttl_s_);
 
   // ── Services ─────────────────────────────────────────────────────────────
   save_map_srv_ = create_service<std_srvs::srv::Trigger>(
@@ -400,14 +378,6 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
              mowgli_interfaces::srv::GetMowingArea::Response::SharedPtr res)
       {
         on_get_mowing_area(req, res);
-      });
-
-  capture_dock_antenna_srv_ = create_service<std_srvs::srv::Trigger>(
-      "~/capture_dock_antenna",
-      [this](const std_srvs::srv::Trigger::Request::SharedPtr req,
-             std_srvs::srv::Trigger::Response::SharedPtr res)
-      {
-        on_capture_dock_antenna(req, res);
       });
 
   set_docking_point_srv_ = create_service<mowgli_interfaces::srv::SetDockingPoint>(
@@ -470,13 +440,12 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
 
   // ── Wheel-slip dig reports (hardware_bridge_node) ─────────────────────
   // The bridge detects the robot digging a hole (wheels turning, GNSS pose
-  // not moving), hard-stops and reverses out. We record an INERT proposal at
-  // that location (no keepout, no coverage hole, nothing saved); applying it
-  // is the operator's call (~/promote_obstacle{pending_id}). Keeping the
-  // robot out of the same patch for the rest of the session is FollowStrip's
-  // job (mowgli_behavior/dig_skip.hpp), which cannot block planning.
-  // TRANSIENT_LOCAL matches the bridge's publisher so a dig that happened
-  // while we were restarting still lands.
+  // not moving), hard-stops and reverses out. We stamp a PENDING keepout at
+  // that location so the next coverage pass routes around it instead of
+  // driving back into the same patch; making it permanent is the operator's
+  // call (~/promote_obstacle{pending_id}). TRANSIENT_LOCAL matches the
+  // bridge's publisher so a dig that happened while we were restarting
+  // still lands.
   if (dig_obstacle_enabled_)
   {
     dig_event_sub_ = create_subscription<mowgli_interfaces::msg::DigEvent>(
@@ -494,6 +463,14 @@ MapServerNode::MapServerNode(const rclcpp::NodeOptions& options)
              mowgli_interfaces::srv::PromoteObstacle::Response::SharedPtr res)
       {
         on_promote_obstacle(req, res);
+      });
+
+  discard_dig_keepouts_near_robot_srv_ = create_service<std_srvs::srv::Trigger>(
+      "~/discard_dig_keepouts_near_robot",
+      [this](const std_srvs::srv::Trigger::Request::SharedPtr req,
+             std_srvs::srv::Trigger::Response::SharedPtr res)
+      {
+        on_discard_dig_keepouts_near_robot(req, res);
       });
 
   discard_obstacle_srv_ = create_service<mowgli_interfaces::srv::ClearObstacle>(
@@ -701,38 +678,8 @@ void MapServerNode::on_mower_status(mowgli_interfaces::msg::Status::ConstSharedP
   mow_blade_active_ = msg->mower_esc_status != 0U;
   mow_blade_rpm_ = msg->mower_motor_rpm;
   mow_blade_telemetry_time_ = rclcpp::Time(msg->blade_status_stamp);
-  update_charging_status(msg->is_charging);
-}
-
-void MapServerNode::update_charging_status(bool charging)
-{
-  last_is_charging_ = charging;
+  last_is_charging_ = msg->is_charging;
   last_status_time_ = now();
-  if (!charging)
-  {
-    // The antenna window exists for ONE purpose — averaging the dock position
-    // — so it must only ever hold samples taken ON the dock. Dropping it the
-    // moment the robot is not charging means a capture right after a (re-)dock
-    // can never average in the samples of the approach.
-    std::lock_guard<std::mutex> lk(recent_gps_antenna_mutex_);
-    recent_gps_antenna_enu_.clear();
-  }
-}
-
-void MapServerNode::push_dock_antenna_sample(double east, double north)
-{
-  if (!last_is_charging_)
-  {
-    return;
-  }
-  const rclcpp::Time t = now();
-  std::lock_guard<std::mutex> lk(recent_gps_antenna_mutex_);
-  recent_gps_antenna_enu_.emplace_back(t, east, north);
-  while (!recent_gps_antenna_enu_.empty() &&
-         (t - std::get<0>(recent_gps_antenna_enu_.front())).seconds() > dock_set_gps_avg_window_s_)
-  {
-    recent_gps_antenna_enu_.pop_front();
-  }
 }
 
 void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
@@ -781,7 +728,8 @@ void MapServerNode::on_odom(nav_msgs::msg::Odometry::ConstSharedPtr /*msg*/)
   // centroid when the robot is inside the area).
   last_robot_x_ = x;
   last_robot_y_ = y;
-  have_robot_pose_ = true;
+  last_robot_yaw_ = yaw;
+  have_robot_heading_ = true;
 
   const rclcpp::Time now_t = now();
   const bool telemetry_fresh =
@@ -966,14 +914,7 @@ void MapServerNode::on_publish_timer()
     // KeepoutFilter to reload its filter every second ("New filter
     // mask arrived" log), invalidating active plans and causing
     // docking nav-to-staging to never settle.
-    //
-    // After a clear_map / add_area the rebuild additionally waits for the map
-    // to be left alone for kMapEditSettle (defer_mask_rebuild): a GUI "Save
-    // map" is clear_map → add_area × N, and rebuilding between two of those
-    // calls both published a HALF-BUILT map to Nav2 (everything outside the
-    // first area lethal) and held this single-threaded executor while the next
-    // add_area sat in the queue — the "context deadline exceeded" on save.
-    if (masks_dirty_ && std::chrono::steady_clock::now() >= mask_rebuild_not_before_)
+    if (masks_dirty_)
     {
       publish_keepout_mask();
       masks_dirty_ = false;

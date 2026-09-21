@@ -359,41 +359,6 @@ func (m *Manager) phase(phase string, err error) error {
 	}
 	return m.save()
 }
-func (m *Manager) recoveryFailed(err error) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.state.Job.Phase = "recovery_required"
-	if err != nil {
-		m.state.Job.RecoveryError = err.Error()
-	}
-	return m.save()
-}
-func (m *Manager) clearRecoveryError() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.state.Job.RecoveryError = ""
-	m.state.Job.RecoveryWarnings = nil
-	return m.save()
-}
-func (m *Manager) verifyRecovery(ctx context.Context, images map[string]string, d *Deployment) error {
-	warnings := []string(nil)
-	var err error
-	if backend, ok := m.backend.(interface {
-		VerifyRecovery(context.Context, map[string]string, *Deployment) ([]string, error)
-	}); ok {
-		warnings, err = backend.VerifyRecovery(ctx, images, d)
-	} else {
-		err = m.backend.Verify(ctx, images, d)
-	}
-	m.mu.Lock()
-	m.state.Job.RecoveryWarnings = warnings
-	saveErr := m.save()
-	m.mu.Unlock()
-	if err != nil {
-		return err
-	}
-	return saveErr
-}
 func (m *Manager) Recover() {
 	m.mu.Lock()
 	if m.busy || !m.state.Job.Pending() {
@@ -436,17 +401,10 @@ func (m *Manager) Rollback() (string, error) {
 }
 func (m *Manager) run(recovery bool) {
 	defer func() { m.mu.Lock(); m.busy = false; m.mu.Unlock() }()
-	if recovery {
-		_ = m.clearRecoveryError()
-	}
 	if backend, ok := m.backend.(interface{ Lock() (func(), error) }); ok {
 		unlock, err := backend.Lock()
 		if err != nil {
-			if recovery {
-				_ = m.recoveryFailed(err)
-			} else {
-				_ = m.phase("recovery_required", err)
-			}
+			_ = m.phase("recovery_required", err)
 			return
 		}
 		defer unlock()
@@ -462,12 +420,12 @@ func (m *Manager) run(recovery bool) {
 		if j.Committed == "rolled_back" {
 			images = j.Plan.Previous
 		}
-		if err := m.verifyRecovery(ctx, images, m.Snapshot().Active); err != nil {
-			_ = m.recoveryFailed(err)
+		if err := m.backend.Verify(ctx, images, m.Snapshot().Active); err != nil {
+			_ = m.phase("recovery_required", err)
 			return
 		}
 		if err := m.backend.Maintenance(ctx, false); err != nil {
-			_ = m.recoveryFailed(err)
+			_ = m.phase("recovery_required", err)
 			return
 		}
 		_ = m.phase(j.Committed, nil)
@@ -477,7 +435,7 @@ func (m *Manager) run(recovery bool) {
 		if gate, ok := m.backend.(interface{ MaintenanceSet() (bool, error) }); ok {
 			active, err := gate.MaintenanceSet()
 			if err != nil {
-				_ = m.recoveryFailed(err)
+				_ = m.phase("recovery_required", err)
 				return
 			}
 			if !active {
@@ -489,16 +447,16 @@ func (m *Manager) run(recovery bool) {
 		// marker might remain; release it only after verifying the previous stack.
 		if j.Phase == "backing_up" || j.Phase == "recovery_required" {
 			if err := m.backend.Apply(ctx, j.Plan.Previous); err != nil {
-				_ = m.recoveryFailed(err)
+				_ = m.phase("recovery_required", err)
 				return
 			}
 		}
-		if err := m.verifyRecovery(ctx, j.Plan.Previous, nil); err != nil {
-			_ = m.recoveryFailed(err)
+		if err := m.backend.Verify(ctx, j.Plan.Previous, nil); err != nil {
+			_ = m.phase("recovery_required", err)
 			return
 		}
 		if err := m.backend.Maintenance(ctx, false); err != nil {
-			_ = m.recoveryFailed(err)
+			_ = m.phase("recovery_required", err)
 			return
 		}
 		failed(errors.New("interrupted before activation"))
@@ -624,7 +582,7 @@ func (m *Manager) run(recovery bool) {
 				return
 			}
 			if err = m.backend.Maintenance(ctx, false); err != nil {
-				_ = m.recoveryFailed(err)
+				_ = m.phase("recovery_required", err)
 			}
 			return
 		}
@@ -637,7 +595,7 @@ func (m *Manager) run(recovery bool) {
 	defer stop()
 	if j.Kind == "rollback" {
 		if err := m.backend.Maintenance(recoveryCtx, true); err != nil {
-			_ = m.recoveryFailed(err)
+			_ = m.phase("recovery_required", err)
 			return
 		}
 	}
@@ -645,15 +603,15 @@ func (m *Manager) run(recovery bool) {
 		return
 	}
 	if err := m.backend.Restore(recoveryCtx, j.Backup); err != nil {
-		_ = m.recoveryFailed(err)
+		_ = m.phase("recovery_required", err)
 		return
 	}
 	if err := m.backend.Apply(recoveryCtx, j.Plan.Previous); err != nil {
-		_ = m.recoveryFailed(err)
+		_ = m.phase("recovery_required", err)
 		return
 	}
-	if err := m.verifyRecovery(recoveryCtx, j.Plan.Previous, j.PreviousActive); err != nil {
-		_ = m.recoveryFailed(err)
+	if err := m.backend.Verify(recoveryCtx, j.Plan.Previous, j.PreviousActive); err != nil {
+		_ = m.phase("recovery_required", err)
 		return
 	}
 	m.mu.Lock()
@@ -678,7 +636,7 @@ func (m *Manager) run(recovery bool) {
 		return
 	}
 	if err = m.backend.Maintenance(recoveryCtx, false); err != nil {
-		_ = m.recoveryFailed(err)
+		_ = m.phase("recovery_required", err)
 	}
 }
 func (m *Manager) finish(phase string) error {

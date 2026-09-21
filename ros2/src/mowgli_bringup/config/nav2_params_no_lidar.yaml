@@ -31,11 +31,7 @@ planner_server:
 global_costmap:
   global_costmap:
     ros__parameters:
-      # ORDER IS LOAD-BEARING: inflation_layer BEFORE keepout_filter, so the
-      # keepout mask (recorded boundary + drawn obstacles) is NOT inflated —
-      # only the static_layer cells are. See the global_costmap block in
-      # nav2_params_base.yaml; test_nav2_params.py pins this in both variants.
-      plugins: ["static_layer", "inflation_layer", "keepout_filter"]
+      plugins: ["static_layer", "keepout_filter", "inflation_layer"]
 
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
