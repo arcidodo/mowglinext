@@ -82,6 +82,7 @@ unless noted otherwise. QoS 1 throughout.
 | `<prefix>/coverage_path` | out | yes | `/coverage/full_plan` (latched) | on change |
 | `<prefix>/diagnostics` | out | no | `/diagnostics` | on change |
 | `<prefix>/available` | out | yes | connection state (LWT) | on connect/disconnect |
+| `<prefix>/host` | out | yes | the bridge's own LAN IP | on connect/reconnect |
 | `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
 | `<prefix>/command` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/high_level_control` | — |
 | `<prefix>/start_area` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/start_in_area` | — |
@@ -299,6 +300,20 @@ that are not driven directly across (e.g. between a ring and the first swath, or
 hole/obstacle). Split the polyline wherever the distance between consecutive points exceeds a
 threshold (the GUI itself uses 0.75 m, `gui/web/src/pages/MapPage.tsx`'s `SUBPATH_GAP_M`) before
 drawing it, rather than connecting every point in order.
+
+### `<prefix>/host`
+
+```json
+{"ip": "192.168.12.10"}
+```
+
+The mower's own LAN IP address, so an external tool can link to its GUI (`http://<ip>:4006`)
+without the operator having to enter it by hand. Detected once at startup (the same address a UDP
+socket would use to reach the internet, via a routing-table lookup that sends nothing and needs no
+actual connectivity — works offline) and republished, retained, on every (re)connect. **Omitted
+entirely** when the robot has no default route at all (a fully static, isolated LAN) — treat a
+missing/absent topic, not an empty `ip`, as "not published"; an empty string is not sent either
+way, since the bridge skips publishing rather than sending one.
 
 ### `<prefix>/diagnostics`
 

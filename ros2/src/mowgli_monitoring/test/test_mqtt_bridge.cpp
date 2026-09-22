@@ -50,7 +50,9 @@
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "sensor_msgs/msg/nav_sat_status.hpp"
+#include <arpa/inet.h>
 #include <gtest/gtest.h>
+#include <netinet/in.h>
 
 using mowgli_monitoring::IMqttClient;
 using mowgli_monitoring::MqttBridgeNode;
@@ -877,4 +879,32 @@ TEST(SerialiseCoveragePath, ProducesExpectedJson)
   const auto path = path_with_points({{1.0, 2.0}, {3.5, -4.25}, {0.0, 0.0}});
   EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(path),
             "{\"points\":[[1.000,2.000],[3.500,-4.250],[0.000,0.000]]}");
+}
+
+// ===========================================================================
+// <prefix>/host (the bridge's own LAN IP, for a consumer to link to the GUI)
+// ===========================================================================
+
+TEST(SerialiseHost, ProducesExpectedJson)
+{
+  EXPECT_EQ(MqttBridgeNode::serialise_host("192.168.12.10"), "{\"ip\":\"192.168.12.10\"}");
+}
+
+TEST(SerialiseHost, EmptyIpIsAnEmptyString)
+{
+  EXPECT_EQ(MqttBridgeNode::serialise_host(""), "{\"ip\":\"\"}");
+}
+
+TEST(DetectLocalIp, ReturnsEmptyOrAValidIPv4Address)
+{
+  // No network access is guaranteed in a test/CI sandbox, so this only checks
+  // the CONTRACT (empty, or a real dotted-quad) rather than a specific value.
+  const std::string ip = MqttBridgeNode::detect_local_ip();
+  if (ip.empty())
+  {
+    SUCCEED();
+    return;
+  }
+  in_addr addr{};
+  EXPECT_EQ(inet_pton(AF_INET, ip.c_str(), &addr), 1) << "not a valid IPv4 address: " << ip;
 }

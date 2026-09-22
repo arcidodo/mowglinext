@@ -54,6 +54,9 @@
  *                                           on their own timers/clients; consolidating them into
  *                                           one poll loop is a natural follow-up, not done here.
  *   (connection state)                   → <prefix>/available  ("online"/"offline", retained, LWT)
+ *   (detected once at startup)            → <prefix>/host       (JSON: {ip}) — retained;
+ *                                           republished on every (re)connect; not published at
+ *                                           all when the host has no default route
  *   (periodic poll, ~10s)                → <prefix>/areas      (JSON array of {index,name}) —
  *                                           retained; walks map_server_node's GetMowingArea
  *                                           index-by-index (same pattern the GUI backend's
@@ -343,6 +346,11 @@ public:
   static std::string serialise_power(const mowgli_interfaces::msg::Power& msg);
   static std::string serialise_emergency(const mowgli_interfaces::msg::Emergency& msg);
   static std::string serialise_position(const nav_msgs::msg::Odometry& msg);
+
+  /// Build the <prefix>/host payload: {"ip": "..."}. `ip` is the empty string when
+  /// none was found (no default route to consult, e.g. an isolated LAN with a
+  /// purely static address) -- a consumer should treat that as "not published".
+  static std::string serialise_host(const std::string& ip);
   /// Map-frame pose {x, y, yaw} from the fused localizer (/odometry/filtered_map).
   static std::string serialise_pose(const nav_msgs::msg::Odometry& msg);
   static std::string serialise_diagnostics(const diagnostic_msgs::msg::DiagnosticArray& msg);
@@ -488,6 +496,12 @@ private:
   void create_high_level_status_subscription();
   void create_service_client();
   void create_timer();
+  /// Local LAN IP the mower is reachable on, for a consumer to build a link to its
+  /// own GUI (host networking, so this is the Pi's real interface, not a container
+  /// address). A UDP "connect" to a public address needs no actual connectivity --
+  /// it only makes the kernel pick a route/interface, exactly what's wanted here --
+  /// so this works offline too. Returns "" if there is no default route at all.
+  static std::string detect_local_ip();
 
   // ---- Area boundary polling (piggybacks on on_timer(), ~every 10s) --------
 
@@ -591,6 +605,7 @@ private:
 
   // Tracks MQTT connection edges so discovery is refreshed after reconnect.
   bool mqtt_was_connected_{false};
+  std::string host_ip_{};
   // Set by MQTT callbacks and consumed by on_timer() after spin_once() has
   // fully returned. This avoids publishing from within the MQTT receive path.
   bool home_assistant_discovery_publish_pending_{false};
