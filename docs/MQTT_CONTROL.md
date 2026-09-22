@@ -79,6 +79,7 @@ unless noted otherwise. QoS 1 throughout.
 | `<prefix>/pose` | out | no | `/odometry/filtered_map` (fused localizer pose, **map frame**) | latest value, at most `publish_rate` Hz |
 | `<prefix>/rtk_status` | out | yes | `/gps/status` (`GnssStatus`) | latest value, at most `publish_rate` Hz |
 | `<prefix>/area_boundary` | out | yes | `/map_server_node/get_mowing_area` (polled) | on change, polled every 10 s |
+| `<prefix>/coverage_path` | out | yes | `/coverage/full_plan` (latched) | on change |
 | `<prefix>/diagnostics` | out | no | `/diagnostics` | on change |
 | `<prefix>/available` | out | yes | connection state (LWT) | on connect/disconnect |
 | `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
@@ -277,6 +278,27 @@ canonical global pose, so it is smoother than the raw `<prefix>/gps` fix (which 
 at the dock) and it carries a heading, which `<prefix>/gps` does not. It needs no datum to be
 placed on the `area_boundary` geometry. Not retained; a localizer that has not converged yet (non-
 finite values) publishes nothing.
+
+### `<prefix>/coverage_path`
+
+```json
+{"points": [[1.234, -0.567], [2.5, -0.567], [2.5, 3.0], "..."]}
+```
+
+The current **planned** coverage path — headland rings, then serpentine swaths, concatenated — in
+the same map frame (metres, no datum needed) as `<prefix>/area_boundary`'s polygons, `<prefix>/pose`
+and `<prefix>/gps`'s projected position, so it overlays directly on them. Relay of
+`/coverage/full_plan` (`nav_msgs/Path`, latched by `behavior_tree_node` right after a
+`plan_coverage` call succeeds) — the same source the robot's own GUI map view draws, retained on
+this topic too so a client that connects mid-mow still gets the current plan immediately, and only
+republished when the plan actually changes (a new area, or a resumed/replanned run).
+
+**Gap caveat**: this is a raw concatenation of segments, not the joined `drivable_subpaths` the
+robot actually drives — consecutive points can be far apart where the plan jumps between segments
+that are not driven directly across (e.g. between a ring and the first swath, or across a
+hole/obstacle). Split the polyline wherever the distance between consecutive points exceeds a
+threshold (the GUI itself uses 0.75 m, `gui/web/src/pages/MapPage.tsx`'s `SUBPATH_GAP_M`) before
+drawing it, rather than connecting every point in order.
 
 ### `<prefix>/diagnostics`
 
