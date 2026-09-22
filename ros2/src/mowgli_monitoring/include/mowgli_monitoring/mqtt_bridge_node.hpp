@@ -350,6 +350,13 @@ public:
   /// none was found (no default route to consult, e.g. an isolated LAN with a
   /// purely static address) -- a consumer should treat that as "not published".
   static std::string serialise_host(const std::string& ip);
+
+  /// Local LAN IP the mower is reachable on, for a consumer to build a link to its
+  /// own GUI (host networking, so this is the Pi's real interface, not a container
+  /// address). A UDP "connect" to a public address needs no actual connectivity --
+  /// it only makes the kernel pick a route/interface, exactly what's wanted here --
+  /// so this works offline too. Returns "" if there is no default route at all.
+  static std::string detect_local_ip();
   /// Map-frame pose {x, y, yaw} from the fused localizer (/odometry/filtered_map).
   static std::string serialise_pose(const nav_msgs::msg::Odometry& msg);
   static std::string serialise_diagnostics(const diagnostic_msgs::msg::DiagnosticArray& msg);
@@ -484,12 +491,6 @@ private:
   void create_high_level_status_subscription();
   void create_service_client();
   void create_timer();
-  /// Local LAN IP the mower is reachable on, for a consumer to build a link to its
-  /// own GUI (host networking, so this is the Pi's real interface, not a container
-  /// address). A UDP "connect" to a public address needs no actual connectivity --
-  /// it only makes the kernel pick a route/interface, exactly what's wanted here --
-  /// so this works offline too. Returns "" if there is no default route at all.
-  static std::string detect_local_ip();
 
   // ---- Area boundary polling (piggybacks on on_timer(), ~every 10s) --------
 
