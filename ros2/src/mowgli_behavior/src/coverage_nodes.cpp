@@ -23,7 +23,9 @@
 #include <limits>
 
 #include "action_msgs/msg/goal_status.hpp"
+#include "mowgli_behavior/cancel_goal.hpp"
 #include "mowgli_behavior/coverage_persistence.hpp"
+#include "mowgli_behavior/strip_progress.hpp"
 #include "mowgli_behavior/unit_resume.hpp"
 #include "tf2/exceptions.hpp"
 
@@ -410,6 +412,22 @@ BT::NodeStatus FollowStrip::onStart()
     coverage_plan_pub_ = ctx->node->create_publisher<nav_msgs::msg::Path>(
         "/controller_server/FollowCoveragePath/global_plan", rclcpp::QoS(1).transient_local());
   }
+  if (!controller_plan_sub_)
+  {
+    // FTC's turn fallback republishes the rest of the unit here when it rejoins
+    // the plan past a blocked turn (see ControllerRejoin in the header).
+    controller_plan_sub_ = ctx->node->create_subscription<nav_msgs::msg::Path>(
+        "/controller_server/FollowCoveragePath/global_plan",
+        rclcpp::QoS(1).transient_local(),
+        [this](nav_msgs::msg::Path::SharedPtr msg)
+        {
+          if (msg && !msg->poses.empty())
+          {
+            controller_rejoin_ = ControllerRejoin{rclcpp::Time(msg->header.stamp, RCL_ROS_TIME),
+                                                  msg->poses.front().pose};
+          }
+        });
+  }
   // Detour-and-continue: subscribe (latched) to the global costmap so an
   // obstacle-abort can be confirmed and a clear resume pose found. Created once.
   if (!costmap_sub_)
@@ -539,27 +557,34 @@ void FollowStrip::updateProgress(const std::shared_ptr<BTContext>& ctx)
   {
     return;  // no pose this tick — keep the last cursor
   }
-  // Monotonic, bounded forward nearest-pose search from the current cursor. The
-  // path can be thousands of poses, so we only scan a forward window (the robot
-  // can't have jumped far in one tick) — O(window), cheap to call every tick.
-  constexpr std::size_t kSearchWindow = 400;
-  const std::size_t end = std::min(poses.size(), path_progress_idx_ + kSearchWindow);
-  double best_d2 = std::numeric_limits<double>::max();
-  std::size_t best = path_progress_idx_;
-  for (std::size_t i = path_progress_idx_; i < end; ++i)
+  // The coverage controller rejoined this unit further on after a turn
+  // fallback: jump to the exact pose it resumed from — the skipped turn is out
+  // of reach of the bounded search below.
+  if (controller_rejoin_.has_value())
   {
-    const auto& p = poses[i].pose.position;
-    const double d2 = (p.x - rx) * (p.x - rx) + (p.y - ry) * (p.y - ry);
-    if (d2 < best_d2)
+    const ControllerRejoin rejoin = *controller_rejoin_;
+    controller_rejoin_.reset();
+    if (swath_goal_sent_ && !transit_active_ && rejoin.stamp > follow_goal_sent_stamp_)
     {
-      best_d2 = d2;
-      best = i;
+      const std::optional<std::size_t> k =
+          findControllerRejoin(poses, path_progress_idx_, rejoin.pose);
+      if (k.has_value())
+      {
+        RCLCPP_INFO(ctx->node->get_logger(),
+                    "FollowStrip: the coverage controller rejoined unit %zu/%zu past a blocked "
+                    "turn — progress cursor %zu -> %zu",
+                    swath_idx_ + 1,
+                    swaths_.size(),
+                    path_progress_idx_,
+                    *k);
+        path_progress_idx_ = *k;
+      }
     }
   }
-  if (best > path_progress_idx_)
-  {
-    path_progress_idx_ = best;
-  }
+  // Monotonic nearest-pose search over at most kMaxProgressAdvanceM of PATH
+  // ahead of the cursor (strip_progress.hpp) — never a pose count: 400 poses
+  // reached the neighbouring serpentine swath and the cursor jumped onto it.
+  path_progress_idx_ = advanceProgressCursor(poses, path_progress_idx_, rx, ry);
 }
 
 float FollowStrip::livePercent() const
@@ -677,9 +702,15 @@ bool FollowStrip::sendFollowGoal(const std::shared_ptr<BTContext>& ctx)
   goal.controller_id = "FollowCoveragePath";
   goal.goal_checker_id = ctx->coverage_goal_checker_id;
 
+  // A controller rejoin only ever refers to the goal about to be sent: drop
+  // anything heard before it (an earlier goal's, or a latched old message).
+  follow_goal_sent_stamp_ = ctx->node->now();
+  controller_rejoin_.reset();
+
   // Publish the segment on the coverage controller's global_plan topic BEFORE
   // dispatching the goal, so the PathProgressGoalChecker has the plan in hand
-  // by the time the controller starts ticking (FTC does not republish it).
+  // by the time the controller starts ticking (FTC does not republish it,
+  // except from a turn-fallback rejoin — see ControllerRejoin).
   if (coverage_plan_pub_)
   {
     coverage_plan_pub_->publish(goal.path);
@@ -2155,10 +2186,8 @@ void TransitToStrip::enforceDeadline(const std::shared_ptr<BTContext>& ctx)
 
 void TransitToStrip::onHalted()
 {
-  if (nav_handle_)
-  {
-    nav_client_->async_cancel_goal(nav_handle_);
-  }
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  cancelGoalQuietly(nav_client_, nav_handle_, ctx->node->get_logger(), "TransitToStrip");
   nav_handle_.reset();
 }
 
@@ -2285,10 +2314,8 @@ BT::NodeStatus DetourAroundObstacle::onRunning()
 
 void DetourAroundObstacle::onHalted()
 {
-  if (nav_handle_)
-  {
-    nav_client_->async_cancel_goal(nav_handle_);
-  }
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  cancelGoalQuietly(nav_client_, nav_handle_, ctx->node->get_logger(), "DetourAroundObstacle");
   nav_handle_.reset();
 }
 
@@ -3154,10 +3181,8 @@ BT::NodeStatus PlanCoverageArea::onRunning()
 
 void PlanCoverageArea::onHalted()
 {
-  if (goal_handle_ && action_client_)
-  {
-    action_client_->async_cancel_goal(goal_handle_);
-  }
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  cancelGoalQuietly(action_client_, goal_handle_, ctx->node->get_logger(), "PlanCoverageArea");
   goal_handle_.reset();
   srv_future_.reset();
 }
