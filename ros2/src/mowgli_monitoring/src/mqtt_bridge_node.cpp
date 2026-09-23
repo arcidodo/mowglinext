@@ -1144,13 +1144,6 @@ void MqttBridgeNode::on_timer()
       // an earlier enabled run with this topic prefix.
       mqtt_client_->publish(home_assistant_discovery_topic(topic_prefix_), "", /*retain=*/true);
     }
-
-    // Rarely changes and is cheap, so just republish on every (re)connect rather
-    // than tracking a "did it change" flag like <prefix>/area_boundary does.
-    if (!host_ip_.empty())
-    {
-      mqtt_client_->publish(full_topic("host"), serialise_host(host_ip_), /*retain=*/true);
-    }
   }
 
   // A Home Assistant birth message is received while spin_once() is driving
@@ -1168,6 +1161,18 @@ void MqttBridgeNode::on_timer()
       // delay delivery until a later timer callback.
       mqtt_client_->spin_once();
     }
+  }
+
+  if (!host_ip_published_ && !host_ip_.empty())
+  {
+    // Rarely changes and is cheap, so just publish once per node lifetime rather
+    // than tracking a "did it change" flag like <prefix>/area_boundary does. Kept
+    // out of the "just (re)connected" block above: this only needs to happen
+    // once, not on every reconnect, and after any discovery publish so a test (or
+    // a consumer) asserting "connecting publishes exactly the discovery config"
+    // is not also seeing this in the same batch.
+    host_ip_published_ = true;
+    mqtt_client_->publish(full_topic("host"), serialise_host(host_ip_), /*retain=*/true);
   }
 
   // Rate-limited publishes: each topic sends only its latest pending message, at most

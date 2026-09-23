@@ -82,7 +82,7 @@ unless noted otherwise. QoS 1 throughout.
 | `<prefix>/coverage_path` | out | yes | `/coverage/full_plan` (latched) | on change |
 | `<prefix>/diagnostics` | out | no | `/diagnostics` | on change |
 | `<prefix>/available` | out | yes | connection state (LWT) | on connect/disconnect |
-| `<prefix>/host` | out | yes | the bridge's own LAN IP | on connect/reconnect |
+| `<prefix>/host` | out | yes | the bridge's own LAN IP | once, on the first successful connect |
 | `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
 | `<prefix>/command` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/high_level_control` | — |
 | `<prefix>/start_area` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/start_in_area` | — |
@@ -310,7 +310,8 @@ drawing it, rather than connecting every point in order.
 The mower's own LAN IP address, so an external tool can link to its GUI (`http://<ip>:4006`)
 without the operator having to enter it by hand. Detected once at startup (the same address a UDP
 socket would use to reach the internet, via a routing-table lookup that sends nothing and needs no
-actual connectivity — works offline) and republished, retained, on every (re)connect. **Omitted
+actual connectivity — works offline) and published once, retained, on the first successful connect
+(a bridge reconnect does not republish it — the broker already retains the value). **Omitted
 entirely** when the robot has no default route at all (a fully static, isolated LAN) — treat a
 missing/absent topic, not an empty `ip`, as "not published"; an empty string is not sent either
 way, since the bridge skips publishing rather than sending one.

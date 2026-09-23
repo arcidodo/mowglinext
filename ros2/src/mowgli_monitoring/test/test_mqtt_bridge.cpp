@@ -247,11 +247,20 @@ TEST_F(HomeAssistantDiscoveryNodeTest, RepublishesDiscoveryWhenHomeAssistantCome
   executor.spin_some();
   executor.remove_node(node);
 
-  ASSERT_EQ(recording->publications.size(), 1U);
+  // <prefix>/host is also published on this same first connect (after discovery,
+  // see on_timer()), but only when the test sandbox happens to have a default
+  // route -- DetectLocalIp's own test covers that environment-dependent contract,
+  // so this only asserts discovery's own shape and that host is never emitted first.
+  ASSERT_FALSE(recording->publications.empty());
   EXPECT_EQ(recording->publications[0].topic, "homeassistant/device/mowglinext_back_garden/config");
   EXPECT_TRUE(recording->publications[0].retained);
   EXPECT_NE(recording->publications[0].payload.find(R"("platform":"lawn_mower")"),
             std::string::npos);
+  ASSERT_LE(recording->publications.size(), 2U);
+  if (recording->publications.size() == 2U)
+  {
+    EXPECT_EQ(recording->publications[1].topic, "back_garden/host");
+  }
 }
 
 // ===========================================================================

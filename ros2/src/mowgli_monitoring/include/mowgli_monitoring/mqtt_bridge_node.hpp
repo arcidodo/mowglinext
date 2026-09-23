@@ -55,8 +55,9 @@
  *                                           one poll loop is a natural follow-up, not done here.
  *   (connection state)                   → <prefix>/available  ("online"/"offline", retained, LWT)
  *   (detected once at startup)            → <prefix>/host       (JSON: {ip}) — retained;
- *                                           republished on every (re)connect; not published at
- *                                           all when the host has no default route
+ *                                           published once per node lifetime, on the first
+ *                                           successful connect; not published at all when the
+ *                                           host has no default route
  *   (periodic poll, ~10s)                → <prefix>/areas      (JSON array of {index,name}) —
  *                                           retained; walks map_server_node's GetMowingArea
  *                                           index-by-index (same pattern the GUI backend's
@@ -607,6 +608,7 @@ private:
   // Tracks MQTT connection edges so discovery is refreshed after reconnect.
   bool mqtt_was_connected_{false};
   std::string host_ip_{};
+  bool host_ip_published_{false};
   // Set by MQTT callbacks and consumed by on_timer() after spin_once() has
   // fully returned. This avoids publishing from within the MQTT receive path.
   bool home_assistant_discovery_publish_pending_{false};
