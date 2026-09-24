@@ -391,6 +391,16 @@ mowgli:
     battery_manual_resume_percent: 30.0     # floor for an operator-forced resume from the charger (Play
                                             # pressed while CHARGING / CRITICAL_BATTERY_CHARGING); must be
                                             # > battery_low_percent or the robot re-docks within minutes
+    battery_charge_tail_current_a: 0.08     # BatteryGuard/CriticalBatteryDock also require the charge
+                                            # current to have tapered to this before auto-resuming, not
+                                            # just battery_full_percent: pack voltage under active charge
+                                            # current reads well above true state of charge for the whole
+                                            # CC/CV charge (not a brief transient), so voltage alone can
+                                            # cross battery_full_percent long before the pack is actually
+                                            # full and the mower undocks prematurely. Mirrors the
+                                            # firmware's own already-calibrated tail-current "full" test,
+                                            # CHARGE_END_LIMIT_CURRENT (board_defaults.h) — keep the two in
+                                            # sync unless you have a specific reason to diverge
 
     # -----------------------------------------------------------------
     # Mowing

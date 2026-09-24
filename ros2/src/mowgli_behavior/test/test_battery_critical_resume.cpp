@@ -30,11 +30,12 @@
  *
  * These tests exercise the exact control flow of the tail of CriticalBatteryDock
  * (from the CriticalChargeOrAbort Fallback onward) using the real EndSession,
- * ClearCommand, IsBatteryAbove and IsResumeUndockAllowed nodes, with stand-ins
- * for IsChargingProgressing (controllable) and BackUp (a marker that records
- * whether the undock/resume tail ran). The IsBatteryLow entry gate is unchanged
- * by the fix and is omitted here (it cannot coexist with the resume gate in a
- * single tick — entry needs battery < 10 %, resume needs battery >= 95 %).
+ * ClearCommand, IsBatteryAbove, IsChargeCurrentBelow and IsResumeUndockAllowed
+ * nodes, with stand-ins for IsChargingProgressing (controllable) and BackUp (a
+ * marker that records whether the undock/resume tail ran). The IsBatteryLow
+ * entry gate is unchanged by the fix and is omitted here (it cannot coexist
+ * with the resume gate in a single tick — entry needs battery < 10 %, resume
+ * needs battery >= 95 % AND a tapered charge current, issue #759's follow-up).
  */
 
 #include <filesystem>
@@ -57,6 +58,7 @@ using mowgli_behavior::BTContext;
 using mowgli_behavior::ClearCommand;
 using mowgli_behavior::EndSession;
 using mowgli_behavior::IsBatteryAbove;
+using mowgli_behavior::IsChargeCurrentBelow;
 using mowgli_behavior::IsCommand;
 using mowgli_behavior::IsCriticalChargeStopHeld;
 using mowgli_behavior::IsCriticalDockFailureLatched;
@@ -151,8 +153,13 @@ protected:
     // Resume level pulled by {battery_full_pct} — the same knob MowingSequence
     // uses; matches the mowgli_robot.yaml default.
     blackboard->set("battery_full_pct", 95.0f);
+    // Tail-current gate (issue #759 follow-up) — matches battery_charge_
+    // tail_current_a's mowgli_robot.yaml default (mirrors the firmware's own
+    // CHARGE_END_LIMIT_CURRENT).
+    blackboard->set("battery_charge_tail_current_a", 0.08f);
 
     factory.registerNodeType<IsBatteryAbove>("IsBatteryAbove");
+    factory.registerNodeType<IsChargeCurrentBelow>("IsChargeCurrentBelow");
     factory.registerNodeType<IsCommand>("IsCommand");
     factory.registerNodeType<IsCriticalChargeStopHeld>("IsCriticalChargeStopHeld");
     factory.registerNodeType<IsCriticalDockFailureLatched>("IsCriticalDockFailureLatched");
@@ -161,6 +168,11 @@ protected:
     factory.registerNodeType<IsResumeUndockAllowed>("IsResumeUndockAllowed");
     factory.registerNodeType<EndSession>("EndSession");
     factory.registerNodeType<ClearCommand>("ClearCommand");
+
+    // Default to "charger active, current already tapered" so tests that only
+    // care about battery_percent don't also have to think about the new gate.
+    ctx->latest_power.charger_enabled = true;
+    ctx->latest_power.charge_current = 0.0f;
 
     factory.registerSimpleCondition("ChargingProgress",
                                     [this](BT::TreeNode&)
@@ -238,7 +250,10 @@ protected:
                         <Sequence>
                           <ChargingProgress/>
                           <Fallback>
-                            <IsBatteryAbove threshold="{battery_full_pct}"/>
+                            <Sequence>
+                              <IsBatteryAbove threshold="{battery_full_pct}"/>
+                              <IsChargeCurrentBelow threshold="{battery_charge_tail_current_a}"/>
+                            </Sequence>
                             <WaitForCharge/>
                           </Fallback>
                         </Sequence>
@@ -271,9 +286,18 @@ protected:
   }
 };
 
-// Recovery: charged past battery_full_pct with a healthy charger MUST
+// Recovery: charged past battery_full_pct AND tapered (SetUp's default
+// charger_enabled=true/charge_current=0.0f) with a healthy charger MUST
 // auto-continue — undock and fall through WITHOUT clearing the command or the
 // resume cursor, so MowingSequence resumes from where it left off.
+//
+// A "full voltage, current not yet tapered" case is not modeled here. This
+// fixture's inner Fallback ends in WaitForCharge, a controllable RUNNING
+// stand-in for the real tree's 5 s wait (see makeTree()), so the gate would
+// hold RUNNING rather than fail — but the scenario is already covered
+// directly by test_manual_resume.cpp's
+// WaitLoopKeepsChargingOnFullVoltageWithUntaperedCurrent (same Fallback,
+// ticked in isolation).
 TEST_F(CriticalBatteryResumeTest, RecoveryAutoContinuesWithoutEndingSession)
 {
   ctx->current_command = 1;  // COMMAND_START in flight
@@ -418,7 +442,9 @@ TEST(CriticalBatteryResumeStructureTest, StopGatesArePostDockReactiveHoldsBefore
   EXPECT_LT(stop_gate, wait);
   EXPECT_LT(wait, undock);
 
-  const auto low_dock = tree.find("<Sequence name=\"BatteryDockAndResume\">");
+  // #765 renamed the BatteryGuard handler BatteryDockAndResume ->
+  // BatteryGuardHandler, matching RainGuardHandler / SensorFaultHandler.
+  const auto low_dock = tree.find("<Sequence name=\"BatteryGuardHandler\">");
   const auto low_dock_action = tree.find("<DockRobot", low_dock);
   const auto low_reactive_hold = tree.find("<ReactiveSequence name=\"ChargeHold\">", low_dock);
   const auto low_stop_gate = tree.find("ChargeHoldNotStopped", low_dock);

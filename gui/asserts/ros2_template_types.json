@@ -4,6 +4,7 @@
   "types": {
     "area_record_rate_hz": "number",
     "area_simplification_tolerance": "number",
+    "battery_charge_tail_current_a": "number",
     "battery_critical_percent": "number",
     "battery_critical_recovery_percent": "number",
     "battery_critical_voltage": "number",

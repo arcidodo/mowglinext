@@ -1290,6 +1290,15 @@ private:
                      static_cast<float>(battery_critical_recovery_pct));
     blackboard_->set("battery_manual_resume_pct", static_cast<float>(battery_manual_resume_pct));
 
+    // Tail-current gate for the charge-hold auto-resume (IsChargeCurrentBelow,
+    // BatteryGuard / CriticalBatteryDock) — see condition_nodes.hpp for why
+    // battery_full_pct alone is not sufficient. Default mirrors the
+    // firmware's CHARGE_END_LIMIT_CURRENT (board_defaults.h).
+    const double battery_charge_tail_current_a =
+        declare_parameter<double>("battery_charge_tail_current_a", 0.08);
+    blackboard_->set("battery_charge_tail_current_a",
+                     static_cast<float>(battery_charge_tail_current_a));
+
     // Swath (mow) angle — operator-tunable in mowgli_robot.yaml and surfaced
     // on the GUI Mowing settings. < 0 = AUTO (coverage server picks the
     // swath-count-minimising angle); 0..179 = a fixed swath angle in degrees.

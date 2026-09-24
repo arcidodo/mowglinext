@@ -902,7 +902,7 @@ inline void clearSingleAreaMode(BTContext& ctx)
 }
 
 /// True for the HighLevelStatus state_name values published while the tree
-/// is parked in a battery charge hold: BatteryDockAndResume's "CHARGING" and
+/// is parked in a battery charge hold: BatteryGuardHandler's "CHARGING" and
 /// CriticalBatteryDock's "CRITICAL_BATTERY_CHARGING" (main_tree.xml). A
 /// COMMAND_START received in one of these states is an operator asking to
 /// resume the mow before the pack reaches battery_full_pct — see
