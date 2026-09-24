@@ -860,8 +860,6 @@ TEST(SerialiseAreaBoundaries, NoDockKeyWhenUnset)
 
 // ===========================================================================
 // <prefix>/host (the bridge's own LAN IP, for a consumer to link to the GUI)
-// ====================================================================}
-
 // ===========================================================================
 
 TEST(SerialiseHost, ProducesExpectedJson)
@@ -886,34 +884,36 @@ TEST(DetectLocalIp, ReturnsEmptyOrAValidIPv4Address)
   }
   in_addr addr{};
   EXPECT_EQ(inet_pton(AF_INET, ip.c_str(), &addr), 1) << "not a valid IPv4 address: " << ip;
-=======
-  // <prefix>/coverage_path (the planned coverage path, /coverage/full_plan)
-  // ===========================================================================
+}
 
-  namespace
-  {
-  nav_msgs::msg::Path path_with_points(const std::vector<std::pair<double, double>>& points)
-  {
-    nav_msgs::msg::Path path{};
-    for (const auto& [x, y] : points)
-    {
-      geometry_msgs::msg::PoseStamped pose{};
-      pose.pose.position.x = x;
-      pose.pose.position.y = y;
-      path.poses.push_back(pose);
-    }
-    return path;
-  }
-  }  // namespace
+// ===========================================================================
+// <prefix>/coverage_path (the planned coverage path, /coverage/full_plan)
+// ===========================================================================
 
-  TEST(SerialiseCoveragePath, EmptyPathIsEmptyPointsArray)
+namespace
+{
+nav_msgs::msg::Path path_with_points(const std::vector<std::pair<double, double>>& points)
+{
+  nav_msgs::msg::Path path{};
+  for (const auto& [x, y] : points)
   {
-    EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(nav_msgs::msg::Path{}), "{\"points\":[]}");
+    geometry_msgs::msg::PoseStamped pose{};
+    pose.pose.position.x = x;
+    pose.pose.position.y = y;
+    path.poses.push_back(pose);
   }
+  return path;
+}
+}  // namespace
 
-  TEST(SerialiseCoveragePath, ProducesExpectedJson)
-  {
-    const auto path = path_with_points({{1.0, 2.0}, {3.5, -4.25}, {0.0, 0.0}});
-    EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(path),
-              "{\"points\":[[1.000,2.000],[3.500,-4.250],[0.000,0.000]]}");
-  }
+TEST(SerialiseCoveragePath, EmptyPathIsEmptyPointsArray)
+{
+  EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(nav_msgs::msg::Path{}), "{\"points\":[]}");
+}
+
+TEST(SerialiseCoveragePath, ProducesExpectedJson)
+{
+  const auto path = path_with_points({{1.0, 2.0}, {3.5, -4.25}, {0.0, 0.0}});
+  EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(path),
+            "{\"points\":[[1.000,2.000],[3.500,-4.250],[0.000,0.000]]}");
+}
