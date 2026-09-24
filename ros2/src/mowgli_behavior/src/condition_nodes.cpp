@@ -22,6 +22,7 @@
 #include <string>
 #include <vector>
 
+#include "mowgli_behavior/coverage_persistence.hpp"
 #include "tf2/exceptions.hpp"
 #include "tf2/time.hpp"
 #include "tf2_ros/buffer.hpp"
@@ -266,6 +267,44 @@ BT::NodeStatus IsCommand::tick()
     current = ctx->current_command;
   }
   return current == res.value() ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus IsCriticalChargeStopHeld::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+  bool latch_current_stop = false;
+  if (!getInput<bool>("latch_current_stop", latch_current_stop))
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (latch_current_stop && ctx->current_command == 8 && !ctx->critical_charge_stop_latched)
+  {
+    ctx->critical_charge_stop_latched = true;
+  }
+  return ctx->critical_charge_stop_latched ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus IsLastDockSucceeded::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  return ctx->last_dock_succeeded ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus IsCriticalDockFailureLatched::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+  return ctx->critical_dock_failure_latched ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+BT::NodeStatus LatchCriticalDockFailure::tick()
+{
+  auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
+  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+  ctx->critical_dock_failure_latched = true;
+  ctx->critical_dock_failure_persistence_requested = true;
+  return BT::NodeStatus::SUCCESS;
 }
 
 // ---------------------------------------------------------------------------

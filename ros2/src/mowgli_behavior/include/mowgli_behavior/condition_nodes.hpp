@@ -268,6 +268,79 @@ public:
   BT::NodeStatus tick() override;
 };
 
+/// Returns SUCCESS for a latched critical charge-hold STOP. The optional port
+/// also latches a current COMMAND_STOP when used inside the post-dock hold.
+/// Used before critical docking and within its charge hold so the completed
+/// dock action is not reissued on later root ticks.
+class IsCriticalChargeStopHeld : public BT::ConditionNode
+{
+public:
+  IsCriticalChargeStopHeld(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {BT::InputPort<bool>("latch_current_stop",
+                                false,
+                                "Latch COMMAND_STOP here; false only reads the persisted latch")};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+/// Succeeds only when the most recent DockRobot action completed successfully.
+class IsLastDockSucceeded : public BT::ConditionNode
+{
+public:
+  IsLastDockSucceeded(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+/// Reads the operator-reset critical docking failure latch.
+class IsCriticalDockFailureLatched : public BT::ConditionNode
+{
+public:
+  IsCriticalDockFailureLatched(const std::string& name, const BT::NodeConfig& config)
+      : BT::ConditionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
+/// Latches a failed critical docking attempt until the next operator command.
+class LatchCriticalDockFailure : public BT::SyncActionNode
+{
+public:
+  LatchCriticalDockFailure(const std::string& name, const BT::NodeConfig& config)
+      : BT::SyncActionNode(name, config)
+  {
+  }
+
+  static BT::PortsList providedPorts()
+  {
+    return {};
+  }
+
+  BT::NodeStatus tick() override;
+};
+
 // ---------------------------------------------------------------------------
 // IsCoverageComplete
 // ---------------------------------------------------------------------------
