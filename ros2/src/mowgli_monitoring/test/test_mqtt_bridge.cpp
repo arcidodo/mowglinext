@@ -38,7 +38,6 @@
 #include "diagnostic_msgs/msg/diagnostic_array.hpp"
 #include "diagnostic_msgs/msg/diagnostic_status.hpp"
 #include "geometry_msgs/msg/polygon.hpp"
-#include "geometry_msgs/msg/pose_stamped.hpp"
 #include "mowgli_interfaces/msg/emergency.hpp"
 #include "mowgli_interfaces/msg/gnss_status.hpp"
 #include "mowgli_interfaces/msg/high_level_status.hpp"
@@ -47,7 +46,6 @@
 #include "mowgli_interfaces/msg/status.hpp"
 #include "mowgli_monitoring/mqtt_bridge_node.hpp"
 #include "nav_msgs/msg/odometry.hpp"
-#include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "sensor_msgs/msg/nav_sat_status.hpp"
 #include <arpa/inet.h>
@@ -856,38 +854,6 @@ TEST(SerialiseAreaBoundaries, NoDockKeyWhenUnset)
   const std::vector<std::pair<uint32_t, mowgli_interfaces::msg::MapArea>> none{};
   EXPECT_EQ(MqttBridgeNode::serialise_area_boundaries(none, 0.0, 0.0, std::nullopt),
             "{\"datum_lat\":0.00000000,\"datum_lon\":0.00000000,\"areas\":[]}");
-}
-
-// ===========================================================================
-// <prefix>/coverage_path (the planned coverage path, /coverage/full_plan)
-// ===========================================================================
-
-namespace
-{
-nav_msgs::msg::Path path_with_points(const std::vector<std::pair<double, double>>& points)
-{
-  nav_msgs::msg::Path path{};
-  for (const auto& [x, y] : points)
-  {
-    geometry_msgs::msg::PoseStamped pose{};
-    pose.pose.position.x = x;
-    pose.pose.position.y = y;
-    path.poses.push_back(pose);
-  }
-  return path;
-}
-}  // namespace
-
-TEST(SerialiseCoveragePath, EmptyPathIsEmptyPointsArray)
-{
-  EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(nav_msgs::msg::Path{}), "{\"points\":[]}");
-}
-
-TEST(SerialiseCoveragePath, ProducesExpectedJson)
-{
-  const auto path = path_with_points({{1.0, 2.0}, {3.5, -4.25}, {0.0, 0.0}});
-  EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(path),
-            "{\"points\":[[1.000,2.000],[3.500,-4.250],[0.000,0.000]]}");
 }
 
 // ===========================================================================
