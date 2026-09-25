@@ -31,6 +31,10 @@ set(msg_files
   "msg/DockCalibrationStatus.msg"
   "msg/DigEvent.msg"
   "msg/CoverageSession.msg"
+  "msg/FirmwareParam.msg"
+  "msg/FirmwareParams.msg"
+  "msg/LidarIgnoreCorridor.msg"
+  "msg/LidarIgnoreCorridorArray.msg"
 )
 
 # Declare service files
@@ -52,6 +56,9 @@ set(srv_files
   "srv/CoverageOrientation.srv"
   "srv/SetFleetAssignment.srv"
   "srv/PromoteObstacle.srv"
+  "srv/AddLidarIgnoreCorridor.srv"
+  "srv/GetLidarIgnoreCorridors.srv"
+  "srv/ClearLidarIgnoreCorridors.srv"
 )
 
 # Declare action files

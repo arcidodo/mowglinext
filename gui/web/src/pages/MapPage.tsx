@@ -14,11 +14,12 @@ import {FeatureCollection, Position} from "geojson";
 import {useMowerAction} from "../components/MowerActions.tsx";
 import {MapStyle} from "./MapStyle.tsx";
 import {drawLine, itranspose, transpose} from "../utils/map.tsx";
+import {getDockAppearanceResetForMowerChange, resolveDockAppearance, resolveMowerAppearance, shouldDisplayMapImage, shouldDisplayMowerImage, type DockAppearanceId, type MowerAppearanceId} from "../constants/mowerAppearances.ts";
 import {useSettings} from "../hooks/useSettings.ts";
 import {useConfig} from "../hooks/useConfig.tsx";
 import {useEnv} from "../hooks/useEnv.tsx";
 import {Spinner} from "../components/Spinner.tsx";
-import {MowingFeature, MowingAreaFeature, DockFeatureBase, MowingFeatureBase, NavigationFeature, ObstacleFeature, ActivePathFeature, PathFeature} from "../types/map.ts";
+import {MowingFeature, MowingAreaFeature, DockFeatureBase, LineFeatureBase, MowingFeatureBase, MowerFeatureBase, NavigationFeature, ObstacleFeature, ActivePathFeature, PathFeature} from "../types/map.ts";
 import {useMapEditHistory} from "./map/hooks/useMapEditHistory.ts";
 import {useMapOffset} from "./map/hooks/useMapOffset.ts";
 import {useMapBearing} from "./map/hooks/useMapBearing.ts";
@@ -34,8 +35,14 @@ import {EditAreaModal} from "./map/components/EditAreaModal.tsx";
 import {AreasListPanel} from "./map/components/AreasListPanel.tsx";
 import {TrackedObstaclesPanel} from "./map/components/TrackedObstaclesPanel.tsx";
 import {ObstacleProposalsPanel} from "./map/components/ObstacleProposalsPanel.tsx";
+import {CORRIDOR_COLOR, LidarCorridorsPanel} from "./map/components/LidarCorridorsPanel.tsx";
+import {DEFAULT_CORRIDOR_WIDTH_M, useLidarCorridors} from "./map/hooks/useLidarCorridors.ts";
+import {simplifyPolyline, smoothPolyline, type XY} from "./map/utils/corridorGeometry.ts";
 import {extractObstacleProposals, isDigProposal} from "./map/utils/obstacleProposals.ts";
 import {MapOffsetPanel} from "./map/components/MapOffsetPanel.tsx";
+import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
+import {getMowerHeadingRad, hasValidMapPosition} from "./map/components/mapImageMarkerMath.ts";
+import {buildMapDisplayFeatures} from "./map/mapDisplayFeatures.ts";
 import {MapToolbar} from "./map/components/MapToolbar.tsx";
 import {MapToolbarMobile} from "./map/components/MapToolbarMobile.tsx";
 import {MapEditorToolbar} from "./map/components/MapEditorToolbar.tsx";
@@ -48,6 +55,10 @@ import {useThemeMode} from "../theme/ThemeContext.tsx";
 // When it is missing the page renders a clear error panel instead of a broken
 // (blank) map, so the misconfiguration is obvious rather than silent.
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN as string | undefined || "pk.eyJ1IjoiY2VkYm9zc25lbyIsImEiOiJjbGxldjB4aDEwOW5vM3BxamkxeWRwb2VoIn0.WOccbQZZyO1qfAgNxnHAnA";
+
+// Stable ordering is required because Mapbox mounts image markers as their
+// selected assets change: dock base < mower < dock tongue foreground.
+const MAP_IMAGE_LAYER_Z_INDEX = {dockBase: 998, mower: 999, dockForeground: 1000} as const;
 
 // Layers the full map queries on hover to drive the two-way obstacle
 // highlight (map polygon → panel row). Module-level so the array identity is
@@ -84,7 +95,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         type: "FeatureCollection",
         features: []
     })
-    const {config, setConfig} = useConfig(["gui.map.offset.x", "gui.map.offset.y", "gui.map.display.bearing"])
+    const {config, setConfig} = useConfig(["gui.map.offset.x", "gui.map.offset.y", "gui.map.display.bearing", "gui.map.mower.appearance", "gui.map.dock.appearance"])
     const envs = useEnv()
     const guiApi = useApi()
     const [tileUri, setTileUri] = useState<string | undefined>()
@@ -98,7 +109,38 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // Same link for PENDING obstacle proposals (wheel-slip dig reports).
     const [selectedProposalId, setSelectedProposalId] = useState<number | null>(null);
     const [features, setFeatures] = useState<Record<string, MowingFeature>>({});
+    const mowerAppearance = resolveMowerAppearance(config["gui.map.mower.appearance"]);
+    const dockAppearance = resolveDockAppearance(config["gui.map.dock.appearance"], mowerAppearance.id);
+    const [loadedMowerImageSrc, setLoadedMowerImageSrc] = useState<string>();
+    const [loadedDockImageSrc, setLoadedDockImageSrc] = useState<string>();
+    const mowerImage = mowerAppearance.mowerImage;
+    const dockImage = dockAppearance.image;
+    const mowerFeature = features.mower;
+    const dockFeature = features.dock;
+    const mowerHasValidPose = mowerFeature instanceof MowerFeatureBase && hasValidMapPosition(mowerFeature.geometry.coordinates);
+    const dockHasValidPose = dockFeature instanceof DockFeatureBase && hasValidMapPosition(dockFeature.getCoordinates());
+    const dockHeadingRad = dockFeature instanceof DockFeatureBase && dockFeature.hasValidHeading() && Number.isFinite(dockFeature.getHeading())
+        ? dockFeature.getHeading()
+        : undefined;
+    const mowerHeadingFeature = features["mower-heading"];
+    const handleMowerAppearanceChange = (id: MowerAppearanceId) => {
+        setLoadedMowerImageSrc(undefined);
+        const dockAppearanceReset = getDockAppearanceResetForMowerChange(dockAppearance, id);
+        if (dockAppearanceReset) setLoadedDockImageSrc(undefined);
+        void setConfig({
+            "gui.map.mower.appearance": id,
+            ...(dockAppearanceReset ? {"gui.map.dock.appearance": dockAppearanceReset} : {}),
+        });
+    };
+    const handleDockAppearanceChange = (id: DockAppearanceId) => {
+        setLoadedDockImageSrc(undefined);
+        void setConfig({"gui.map.dock.appearance": id});
+    };
     const [dockPlacementMode, setDockPlacementMode] = useState<boolean>(false);
+    // LiDAR-ignore lines: null = not drawing, otherwise the clicked [lng, lat]
+    // points so far. Independent of the polygon edit pipeline (useMapEditing).
+    const [corridorDraw, setCorridorDraw] = useState<[number, number][] | null>(null);
+    const lidarCorridors = useLidarCorridors();
     // OpenMower import preview — populated by handleImportOpenMower after
     // the file is uploaded + parsed server-side. Modal renders when set.
     const [importPreview, setImportPreview] = useState<ImportOpenMowerSummary | null>(null);
@@ -163,33 +205,36 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return [_datumLat, _datumLon, 0]
     }, [_datumLat, _datumLon])
 
-    // Display-only features (mower, dock, heading, paths) rendered as separate layers
-    const displayFeatures = useMemo<GeoJSON.FeatureCollection>(() => {
-        const feats = Object.values(features)
-            .filter(f => !(f instanceof MowingFeatureBase))
-            .map(f => ({
-                type: "Feature" as const,
-                id: f.id,
-                geometry: f.geometry,
-                properties: f.properties,
-            }));
+    const mowerHeadingRad = mowerHeadingFeature instanceof LineFeatureBase
+        ? getMowerHeadingRad(mowerHeadingFeature.geometry.coordinates, (lng, lat) =>
+            itranspose(offsetX, offsetY, datum, lat, lng))
+        : undefined;
+    const mowerImageReady = shouldDisplayMowerImage(
+        mowerAppearance,
+        loadedMowerImageSrc,
+        mowerHasValidPose,
+        mowerHeadingRad !== undefined,
+    );
+    const dockImageReady = shouldDisplayMapImage(
+        dockImage,
+        loadedDockImageSrc,
+        dockHasValidPose,
+        dockHeadingRad !== undefined,
+    );
 
-        // Add dock heading direction line (longer, with contrasting color)
-        const dock = features["dock"];
-        if (dock instanceof DockFeatureBase) {
+    // Display-only features (mower, dock, heading, paths) rendered as separate layers
+    const displayFeatures = useMemo(() => buildMapDisplayFeatures(
+        features,
+        mowerImageReady,
+        dockImageReady,
+        (dock) => {
             const coords = dock.getCoordinates();
             const rosCoords = datum[0] !== 0 ? itranspose(offsetX, offsetY, datum, coords[1], coords[0]) : [0, 0];
             const endPoint = drawLine(offsetX, offsetY, datum, rosCoords[1], rosCoords[0], dock.getHeading());
-            feats.push({
-                type: "Feature" as const,
-                id: "dock-heading",
-                geometry: {type: "LineString", coordinates: [coords, endPoint]},
-                properties: {color: LAYER_COLORS.dockHeading, width: 3, feature_type: "dock-heading"},
-            });
-        }
-
-        return {type: "FeatureCollection", features: feats};
-    }, [features, offsetX, offsetY, datum, LAYER_COLORS]);
+            return {type: "LineString", coordinates: [coords, endPoint]};
+        },
+        LAYER_COLORS.dockHeading,
+    ), [features, offsetX, offsetY, datum, LAYER_COLORS, mowerImageReady, dockImageReady]);
 
     // Layers for the persistent tracked-obstacle polygons (feature_type
     // 'dyn-obstacle', carried in the same display-features source). Rendered as
@@ -244,6 +289,45 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         mapInstanceRef,
         robotPoseRef,
     });
+
+    const mowerImageMarker = mowerImage && mowerFeature instanceof MowerFeatureBase && mowerHasValidPose && mowerHeadingRad !== undefined
+        ? <MapImageMarker
+            image={mowerImage}
+            alt={t(mowerImage.altKey)}
+            longitude={mowerFeature.geometry.coordinates[0]}
+            latitude={mowerFeature.geometry.coordinates[1]}
+            headingRad={mowerHeadingRad}
+            zIndex={MAP_IMAGE_LAYER_Z_INDEX.mower}
+            onLoad={() => setLoadedMowerImageSrc(mowerImage.src)}
+            onError={() => setLoadedMowerImageSrc(undefined)}
+        />
+        : null;
+    const dockImageMarker = dockImage && dockFeature instanceof DockFeatureBase && dockHasValidPose && dockHeadingRad !== undefined
+        ? <MapImageMarker
+            image={dockImage}
+            alt={t(dockImage.altKey)}
+            longitude={dockFeature.geometry.coordinates[0]}
+            latitude={dockFeature.geometry.coordinates[1]}
+            headingRad={dockHeadingRad}
+            zIndex={MAP_IMAGE_LAYER_Z_INDEX.dockBase}
+            onLoad={() => setLoadedDockImageSrc(dockImage.src)}
+            onError={() => setLoadedDockImageSrc(undefined)}
+        />
+        : null;
+    const dockForegroundMarker = dockImage && dockAppearance.foregroundClipPath &&
+        dockFeature instanceof DockFeatureBase && dockHasValidPose && dockHeadingRad !== undefined
+        ? <MapImageMarker
+            image={dockImage}
+            alt=""
+            longitude={dockFeature.geometry.coordinates[0]}
+            latitude={dockFeature.geometry.coordinates[1]}
+            headingRad={dockHeadingRad}
+            clipPath={dockAppearance.foregroundClipPath}
+            zIndex={MAP_IMAGE_LAYER_Z_INDEX.dockForeground}
+            onLoad={() => {}}
+            onError={() => {}}
+        />
+        : null;
 
     // Compute map bounds for the Mapbox viewport — depends on map data for centering
     const [map_ne, map_sw] = useMemo<[[number, number], [number, number]]>(() => {
@@ -307,7 +391,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
             // dock at NaN; skip the marker instead when the pose is absent.
             if (map.dock_x !== undefined && map.dock_y !== undefined) {
                 const dock_lonlat = transpose(offsetX, offsetY, datum, map.dock_y, map.dock_x)
-                newFeatures["dock"] = new DockFeatureBase(dock_lonlat, map.dock_heading ?? 0);
+                newFeatures["dock"] = new DockFeatureBase(dock_lonlat, map.dock_heading);
             }
         }
         if (path?.poses) {
@@ -681,18 +765,182 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, [dockPlacementMode]);
 
 
+    // Escape cancels an in-progress ignore line.
+    const corridorBusyMode = corridorDraw !== null;
+    useEffect(() => {
+        if (!corridorBusyMode) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (e.key === "Escape") setCorridorDraw(null);
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [corridorBusyMode]);
+
+    // Leaving map edit mode abandons an unsaved draw.
+    useEffect(() => {
+        if (!editMap) setCorridorDraw(null);
+    }, [editMap]);
+
+    const handleFinishCorridor = useCallback(async () => {
+        if (!corridorDraw || corridorDraw.length < 2) return;
+        const points = corridorDraw.map(([lng, lat]) => {
+            const [x, y] = itranspose(offsetX, offsetY, datum, lat, lng);
+            return {x, y, z: 0};
+        });
+        try {
+            await lidarCorridors.save([
+                ...lidarCorridors.corridors,
+                {name: "", polyline: {points}, width_m: DEFAULT_CORRIDOR_WIDTH_M, id: 0},
+            ]);
+            setCorridorDraw(null);
+        } catch (error: unknown) {
+            notification.error({
+                message: t('mapLidarCorridors.saveFailed'),
+                description: error instanceof Error ? error.message : undefined,
+            });
+        }
+    }, [corridorDraw, offsetX, offsetY, datum, lidarCorridors, notification, t]);
+
+    const handleCorridorChange = useCallback(async (next: typeof lidarCorridors.corridors) => {
+        try {
+            await lidarCorridors.save(next);
+        } catch (error: unknown) {
+            notification.error({
+                message: t('mapLidarCorridors.saveFailed'),
+                description: error instanceof Error ? error.message : undefined,
+            });
+        }
+    }, [lidarCorridors, notification, t]);
+
+    // Corridors are also handed to DrawControl (map edit mode only) so they get
+    // the same vertex drag / midpoint add / vertex delete editing as areas.
+    const corridorDrawId = (c: {id?: number}) => `lidar-corridor-${c.id}`;
+    const isCorridorDrawFeature = (f: Feature) => String(f.id ?? "").startsWith("lidar-corridor-");
+
+    const corridorDrawFeatures = useMemo((): Feature[] => {
+        if (!editMap || datum[0] === 0) return [];
+        return lidarCorridors.corridors
+            .filter((c) => (c.id ?? 0) !== 0 && (c.polyline?.points?.length ?? 0) >= 2)
+            .map((c): Feature => ({
+                type: "Feature",
+                id: corridorDrawId(c),
+                properties: {feature_type: "lidar_corridor", color: CORRIDOR_COLOR, width: 4},
+                geometry: {
+                    type: "LineString",
+                    coordinates: (c.polyline?.points ?? []).map((p) => transpose(offsetX, offsetY, datum, p.y ?? 0, p.x ?? 0)),
+                },
+            }));
+    }, [editMap, lidarCorridors.corridors, datum, offsetX, offsetY]);
+
+    const drawControlFeatures = useMemo(
+        () => [...drawableFeatures, ...corridorDrawFeatures],
+        [drawableFeatures, corridorDrawFeatures]);
+
+    // A finished vertex drag / add / remove on a corridor line -> save the list.
+    const handleCorridorDrawUpdate = useCallback((changed: Feature[]) => {
+        const byId = new globalThis.Map(changed.map((f) => [String(f.id), f]));
+        const next = lidarCorridors.corridors.map((c) => {
+            const f = byId.get(corridorDrawId(c));
+            if (!f || f.geometry.type !== "LineString") return c;
+            const points = f.geometry.coordinates.map(([lng, lat]) => {
+                const [x, y] = itranspose(offsetX, offsetY, datum, lat, lng);
+                return {x, y, z: 0};
+            });
+            return points.length >= 2 ? {...c, polyline: {points}} : c;
+        });
+        void handleCorridorChange(next);
+    }, [lidarCorridors.corridors, offsetX, offsetY, datum, handleCorridorChange]);
+
+    const handleCorridorDrawDelete = useCallback((deleted: Feature[]) => {
+        const ids = new Set(deleted.map((f) => String(f.id)));
+        void handleCorridorChange(lidarCorridors.corridors.filter((c) => !ids.has(corridorDrawId(c))));
+    }, [lidarCorridors.corridors, handleCorridorChange]);
+
+    const onDrawUpdate = useCallback((e: {features: Feature[]; action: string}) => {
+        const corr = e.features.filter(isCorridorDrawFeature);
+        const rest = e.features.filter((f) => !isCorridorDrawFeature(f));
+        if (corr.length > 0) handleCorridorDrawUpdate(corr);
+        if (rest.length > 0) onUpdate({...e, features: rest});
+    }, [handleCorridorDrawUpdate, onUpdate]);
+
+    const onDrawDelete = useCallback((e: {features: Feature[]}) => {
+        const corr = e.features.filter(isCorridorDrawFeature);
+        const rest = e.features.filter((f) => !isCorridorDrawFeature(f));
+        if (corr.length > 0) handleCorridorDrawDelete(corr);
+        if (rest.length > 0) onDelete({...e, features: rest});
+    }, [handleCorridorDrawDelete, onDelete]);
+
+    const onDrawOpenDetails = useCallback((e: {feature?: Feature}) => {
+        if (e.feature && isCorridorDrawFeature(e.feature)) return;
+        onOpenDetails(e);
+    }, [onOpenDetails]);
+
+    // Index of the line currently selected on the map (for Make curved / Simplify).
+    const selectedCorridorIndex = lidarCorridors.corridors.findIndex((c) => selectedFeatureIds.includes(corridorDrawId(c)));
+    const handleReshapeSelectedCorridor = (reshape: (points: XY[]) => XY[]) => {
+        const i = selectedCorridorIndex;
+        if (i < 0) return;
+        const points = (lidarCorridors.corridors[i].polyline?.points ?? []).map((p) => ({x: p.x ?? 0, y: p.y ?? 0}));
+        const out = reshape(points);
+        void handleCorridorChange(lidarCorridors.corridors.map((c, k) =>
+            k === i ? {...c, polyline: {points: out.map((p) => ({x: p.x, y: p.y, z: 0}))}} : c));
+    };
+
+    // ROS-frame corridors + the line being drawn, as GeoJSON for the map.
+    const corridorFeatures = useMemo((): FeatureCollection => {
+        const features: Feature[] = [];
+        if (datum[0] !== 0) {
+            lidarCorridors.corridors.forEach((corridor) => {
+                // In map edit mode the lines are drawn (and edited) by DrawControl.
+                if (editMap) return;
+                const pts = corridor.polyline?.points ?? [];
+                if (pts.length < 2) return;
+                features.push({
+                    type: "Feature",
+                    properties: {kind: "corridor"},
+                    geometry: {
+                        type: "LineString",
+                        coordinates: pts.map((p) => transpose(offsetX, offsetY, datum, p.y ?? 0, p.x ?? 0)),
+                    },
+                });
+            });
+        }
+        if (corridorDraw && corridorDraw.length > 0) {
+            if (corridorDraw.length >= 2) {
+                features.push({
+                    type: "Feature",
+                    properties: {kind: "draft"},
+                    geometry: {type: "LineString", coordinates: corridorDraw},
+                });
+            }
+            corridorDraw.forEach((coord) => features.push({
+                type: "Feature",
+                properties: {kind: "draft-point"},
+                geometry: {type: "Point", coordinates: coord},
+            }));
+        }
+        return {type: "FeatureCollection", features};
+    }, [lidarCorridors.corridors, corridorDraw, editMap, datum, offsetX, offsetY]);
+
     const handleMapClick = useCallback((e: {lngLat: {lng: number; lat: number}}) => {
+        if (corridorDraw !== null) {
+            const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
+            setCorridorDraw(prev => [...(prev ?? []), coord]);
+            return;
+        }
         if (!dockPlacementMode) return;
         setDockPlacementMode(false);
         const coord: [number, number] = [e.lngLat.lng, e.lngLat.lat];
         setFeatures(prev => {
             const existingDock = prev["dock"];
-            const heading = existingDock instanceof DockFeatureBase ? existingDock.getHeading() : 0;
+            const heading = existingDock instanceof DockFeatureBase && existingDock.hasValidHeading()
+                ? existingDock.getHeading()
+                : undefined;
             return {...prev, dock: new DockFeatureBase(coord, heading)};
         });
         setHasUnsavedChanges(true);
         setDockDirty(true);
-    }, [dockPlacementMode, setHasUnsavedChanges]);
+    }, [dockPlacementMode, corridorDraw, offsetX, offsetY, datum, setHasUnsavedChanges]);
 
     // Map → panel side of the two-way obstacle highlight: while the cursor is
     // over a tracked-obstacle polygon, mirror its id into selectedObstacleId so
@@ -925,6 +1173,9 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         {/* Persistent tracked-obstacle polygons + id labels (compact overview: no highlight) */}
                         {renderDynObstacleLayers(false)}
                     </Source>
+                    {dockImageMarker}
+                    {mowerImageMarker}
+                    {dockForegroundMarker}
                 </Map> : <Spinner/>}
             </div>
         );
@@ -975,7 +1226,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                                          onClick={handleMapClick}
                                                          interactiveLayerIds={DYN_OBSTACLE_INTERACTIVE_LAYERS}
                                                          onMouseMove={handleMapMouseMove}
-                                                         cursor={dockPlacementMode ? 'crosshair' : undefined}
+                                                         cursor={dockPlacementMode || corridorDraw !== null ? 'crosshair' : undefined}
                 >
                     {tileUri ? <Source type={"raster"} id={"custom-raster"} tiles={[tileUri]} tileSize={256}/> : null}
                     {tileUri ? <Layer type={"raster"} source={"custom-raster"} id={"custom-layer"}/> : null}
@@ -994,18 +1245,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         drawRef={drawRef}
                         styles={MapStyle}
                         userProperties={true}
-                        features={drawableFeatures}
+                        features={drawControlFeatures}
                         position="top-left"
                         displayControlsDefault={false}
                         editMode={editMap}
                         controls={{}}
                         defaultMode="simple_select"
                         onCreate={onCreate}
-                        onUpdate={onUpdate}
+                        onUpdate={onDrawUpdate}
                         onCombine={onCombine}
-                        onDelete={onDelete}
+                        onDelete={onDrawDelete}
                         onSelectionChange={onSelectionChange}
-                        onOpenDetails={onOpenDetails}
+                        onOpenDetails={onDrawOpenDetails}
                     />
                     {/* Display-only features: mower, dock, heading, paths */}
                     <Source type={"geojson"} id={"display-features"} data={displayFeatures}>
@@ -1084,8 +1335,25 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         {/* Persistent tracked-obstacle polygons + id labels + hover/select highlight */}
                         {renderDynObstacleLayers(true)}
                     </Source>
+                    {dockImageMarker}
+                    {mowerImageMarker}
+                    {dockForegroundMarker}
                     {/* PENDING obstacle proposals (dig reports): dashed, never a real keepout */}
                     {renderProposalLayers()}
+                    {/* Operator-drawn LiDAR-ignore lines + the line being drawn */}
+                    <Source type={"geojson"} id={"lidar-corridors"} data={corridorFeatures}>
+                        <Layer type={"line"} id={"lidar-corridor-lines"}
+                            filter={['==', ['get', 'kind'], 'corridor']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': CORRIDOR_COLOR, 'line-width': 4, 'line-dasharray': [2, 1]}}/>
+                        <Layer type={"line"} id={"lidar-corridor-draft"}
+                            filter={['==', ['get', 'kind'], 'draft']}
+                            layout={{'line-cap': 'round', 'line-join': 'round'}}
+                            paint={{'line-color': '#ffffff', 'line-width': 3, 'line-dasharray': [1, 1]}}/>
+                        <Layer type={"circle"} id={"lidar-corridor-draft-points"}
+                            filter={['==', ['get', 'kind'], 'draft-point']}
+                            paint={{'circle-radius': 5, 'circle-color': CORRIDOR_COLOR, 'circle-stroke-color': '#ffffff', 'circle-stroke-width': 2}}/>
+                    </Source>
                     {/* fusion_graph's LiDAR anchor map (walls as ink, scanned ground as a faint wash). */}
                     {lidarMapImage && (
                         <Source type={"image"} id={"lidar-map"} url={lidarMapImage.url} coordinates={lidarMapImage.coordinates}>
@@ -1155,6 +1423,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onUndo={handleUndo}
                         onRedo={handleRedo}
                         onToggleSatellite={() => setUseSatellite(!useSatellite)}
+                        mowerAppearanceId={mowerAppearance.id}
+                        onMowerAppearanceChange={handleMowerAppearanceChange}
+                        dockAppearanceId={dockAppearance.id}
+                        onDockAppearanceChange={handleDockAppearanceChange}
                         onManualMode={handleManualMode}
                         onStopManualMode={handleStopManualMode}
                         onBackupMap={handleBackupMap}
@@ -1211,6 +1483,10 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         <MapToolbar
                             manualMode={manualMode}
                             useSatellite={useSatellite}
+                            mowerAppearanceId={mowerAppearance.id}
+                            onMowerAppearanceChange={handleMowerAppearanceChange}
+                            dockAppearanceId={dockAppearance.id}
+                            onDockAppearanceChange={handleDockAppearanceChange}
                             mowingAreas={mowingAreas}
                             stateName={highLevelStatus.highLevelStatus.state_name}
                             highLevelState={highLevelStatus.highLevelStatus.state}
@@ -1260,6 +1536,25 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 />
                             </div>
                         )}
+                        <div style={{borderTop: `1px solid ${colors.borderSubtle}`}}>
+                            <LidarCorridorsPanel
+                                corridors={lidarCorridors.corridors}
+                                busy={lidarCorridors.busy}
+                                editable={editMap}
+                                drawing={corridorDraw !== null}
+                                drawPointCount={corridorDraw?.length ?? 0}
+                                onStartDraw={() => setCorridorDraw([])}
+                                onFinishDraw={() => void handleFinishCorridor()}
+                                onCancelDraw={() => setCorridorDraw(null)}
+                                onChangeWidth={(index, widthM) => void handleCorridorChange(
+                                    lidarCorridors.corridors.map((c, i) => i === index ? {...c, width_m: widthM} : c))}
+                                onDelete={(index) => void handleCorridorChange(
+                                    lidarCorridors.corridors.filter((_, i) => i !== index))}
+                                selectedIndex={selectedCorridorIndex >= 0 ? selectedCorridorIndex : null}
+                                onSmooth={() => handleReshapeSelectedCorridor((pts) => smoothPolyline(pts))}
+                                onSimplify={() => handleReshapeSelectedCorridor((pts) => simplifyPolyline(pts))}
+                            />
+                        </div>
                         <div style={{borderTop: `1px solid ${colors.borderSubtle}`, padding: 8}}>
                             <MapOffsetPanel
                                 offsetX={offsetX}
