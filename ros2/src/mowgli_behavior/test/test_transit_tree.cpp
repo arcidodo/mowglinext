@@ -104,8 +104,9 @@ TEST(TransitTree, RecoveryHasNoSpin)
     const auto round_robin = xml.find("RecoveryActions");
     ASSERT_NE(round_robin, std::string::npos) << path << ": no recovery RoundRobin";
     EXPECT_EQ(xml.find("<Spin", round_robin), std::string::npos)
-        << path << ": Spin must not be in the recovery RoundRobin (bought no recovery, next to a "
-                   "hedge only risk — see the RoundRobin's own doc comment)";
+        << path
+        << ": Spin must not be in the recovery RoundRobin (bought no recovery, next to a "
+           "hedge only risk — see the RoundRobin's own doc comment)";
   }
 }
 

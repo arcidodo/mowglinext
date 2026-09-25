@@ -1405,9 +1405,9 @@ BT::NodeStatus FollowStrip::onRunning()
         // radius between attempts.
         if (last_detour_stuck_point_.has_value())
         {
-          ctx->session_failed_transit_targets = recordFailedTransit(
-              ctx->session_failed_transit_targets,
-              {last_detour_stuck_point_->x, last_detour_stuck_point_->y});
+          ctx->session_failed_transit_targets =
+              recordFailedTransit(ctx->session_failed_transit_targets,
+                                  {last_detour_stuck_point_->x, last_detour_stuck_point_->y});
         }
       }
       transit_active_ = false;
