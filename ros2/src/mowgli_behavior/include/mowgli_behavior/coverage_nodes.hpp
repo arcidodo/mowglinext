@@ -504,6 +504,20 @@ private:
   // Blade-off detours taken on the CURRENT segment (unit). Reset to 0 per unit
   // (onStart and on advance() to the next unit). Bounded by max_detours_per_segment_.
   std::size_t detours_used_ = 0;
+  // The FTC-stuck pose (poses[stuck] in tryStartDetour) of the detour currently
+  // in flight, if any — set right before the blade-off transit is dispatched,
+  // consumed (recorded into session_failed_transit_targets) if that transit
+  // later fails, and reset once consumed or on any unit reset. This exists
+  // because the detour's TRANSIT TARGET (the resume pose past the obstacle) is
+  // re-derived from the live costmap on every attempt and can drift by more
+  // than session_failed_transit_targets' merge radius between dispatch
+  // attempts of the same area — so recording only that point let a real,
+  // static obstacle (e.g. a hedge) re-trigger the full
+  // confirm+search+transit+Nav2-recovery cycle on every fresh dispatch. The
+  // STUCK pose is fixed plan geometry: the same obstacle blocks FTC at
+  // essentially the same point every time, so recording (and checking) THIS
+  // point reliably catches the repeat.
+  std::optional<geometry_msgs::msg::Point> last_detour_stuck_point_;
   /// Consecutive same-unit resumes that made no real progress (unit_resume.hpp).
   std::size_t unit_resumes_without_progress_ = 0;
 
