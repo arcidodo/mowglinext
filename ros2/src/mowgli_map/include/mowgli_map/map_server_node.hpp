@@ -512,8 +512,8 @@ private:
       const mowgli_interfaces::srv::ClearLidarIgnoreCorridors::Request::SharedPtr req,
       mowgli_interfaces::srv::ClearLidarIgnoreCorridors::Response::SharedPtr res);
   /// Republish the full current list on lidar_ignore_corridors_pub_
-  /// (transient_local) — called after every add/clear/load, mirroring
-  /// bump_area_list_generation()'s "announce on every change" shape.
+  /// (transient_local) — called after every add/clear/load, so a late
+  /// subscriber always has the current list.
   void publish_lidar_ignore_corridors();
 
   /// ~/capture_dock_antenna: average the RAW antenna position while seated on
