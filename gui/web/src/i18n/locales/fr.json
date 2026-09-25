@@ -1757,7 +1757,18 @@
     "finish": "Terminer la ligne",
     "cancel": "Annuler",
     "draw": "Tracer une ligne d'ignorance",
-    "saveFailed": "Impossible d'enregistrer les lignes d'ignorance"
+    "saveFailed": "Impossible d'enregistrer les lignes d'ignorance",
+    "edit": "Modifier cette ligne",
+    "editing": "Modification : {{points}} points, {{length}} m.",
+    "handlesHidden": "Trop de points pour afficher les poignées - utilisez Simplifier.",
+    "append": "Ajouter un point à la fin",
+    "appendTooltip": "Cliquez ensuite sur la carte pour prolonger la ligne",
+    "smooth": "Courber",
+    "smoothTooltip": "Arrondir la ligne à travers ses points (ajoute des points le long de la courbe)",
+    "simplify": "Simplifier",
+    "simplifyTooltip": "Supprimer les points qui changent à peine la forme",
+    "save": "Enregistrer les modifications",
+    "editHint": "Faites glisser un point pour le déplacer, cliquez sur un + pour ajouter un point, double-cliquez sur un point pour le supprimer."
   },
   "mapObstacleProposals": {
     "header": "Propositions d’obstacles ({{count}})",
