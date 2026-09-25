@@ -1758,6 +1758,7 @@
     "cancel": "Annuler",
     "draw": "Tracer une ligne d'ignorance",
     "saveFailed": "Impossible d'enregistrer les lignes d'ignorance",
+    "lockedHint": "Passez en mode édition de la carte pour modifier ces lignes.",
     "edit": "Modifier cette ligne",
     "editing": "Modification : {{points}} points, {{length}} m.",
     "handlesHidden": "Trop de points pour afficher les poignées - utilisez Simplifier.",

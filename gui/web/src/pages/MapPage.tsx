@@ -790,6 +790,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         return () => window.removeEventListener("keydown", onKeyDown);
     }, [corridorBusyMode]);
 
+    // Leaving map edit mode abandons any unsaved draw / reshape.
+    useEffect(() => {
+        if (!editMap) {
+            setCorridorDraw(null);
+            setCorridorEdit(null);
+        }
+    }, [editMap]);
+
     const handleStartCorridorEdit = useCallback((index: number) => {
         const pts = lidarCorridors.corridors[index]?.polyline?.points ?? [];
         if (pts.length < 2) return;
@@ -1566,6 +1574,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             <LidarCorridorsPanel
                                 corridors={lidarCorridors.corridors}
                                 busy={lidarCorridors.busy}
+                                editable={editMap}
                                 drawing={corridorDraw !== null}
                                 drawPointCount={corridorDraw?.length ?? 0}
                                 onStartDraw={() => setCorridorDraw([])}

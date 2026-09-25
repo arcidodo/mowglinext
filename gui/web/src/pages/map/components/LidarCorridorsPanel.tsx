@@ -11,6 +11,8 @@ export const CORRIDOR_COLOR = '#eb2f96';
 interface LidarCorridorsPanelProps {
     corridors: LidarIgnoreCorridor[];
     busy: boolean;
+    /// False outside the map edit mode: the list is then read-only.
+    editable: boolean;
     /// True while the operator is clicking points onto the map.
     drawing: boolean;
     drawPointCount: number;
@@ -41,7 +43,7 @@ interface LidarCorridorsPanelProps {
 /// so the robot follows the recorded boundary next to e.g. a hedge instead of
 /// being pushed off it. Everywhere else the LiDAR keeps working normally.
 export const LidarCorridorsPanel = ({
-    corridors, busy, drawing, drawPointCount, onStartDraw, onFinishDraw, onCancelDraw, onChangeWidth, onDelete,
+    corridors, busy, editable, drawing, drawPointCount, onStartDraw, onFinishDraw, onCancelDraw, onChangeWidth, onDelete,
     editingIndex, editPointCount, editLengthM, appending, handlesHidden,
     onEdit, onToggleAppend, onSmooth, onSimplify, onSaveEdit, onCancelEdit,
 }: LidarCorridorsPanelProps) => {
@@ -65,6 +67,11 @@ export const LidarCorridorsPanel = ({
             <div style={{padding: '6px 12px', fontSize: 11, color: colors.muted}}>
                 {t('mapLidarCorridors.hint')}
             </div>
+            {!editable && (
+                <div style={{padding: '0 12px 6px', fontSize: 11, color: colors.muted}}>
+                    {t('mapLidarCorridors.lockedHint')}
+                </div>
+            )}
             <div style={{padding: '0 12px 6px'}}>
                 <Alert type="warning" showIcon style={{fontSize: 11, padding: '4px 8px'}}
                     message={t('mapLidarCorridors.safetyWarning')}/>
@@ -89,7 +96,7 @@ export const LidarCorridorsPanel = ({
                             step={5}
                             precision={0}
                             addonAfter="cm"
-                            disabled={busy}
+                            disabled={busy || !editable}
                             value={Math.round((corridor.width_m ?? 0.2) * 100)}
                             aria-label={t('mapLidarCorridors.widthLabel')}
                             title={t('mapLidarCorridors.widthTooltip')}
@@ -97,11 +104,11 @@ export const LidarCorridorsPanel = ({
                                 if (typeof value === 'number') onChangeWidth(index, value / 100);
                             }}
                         />
-                        <Button size="small" type="text" disabled={busy || drawing || editing}
+                        <Button size="small" type="text" disabled={busy || !editable || drawing || editing}
                             icon={<EditOutlined aria-hidden="true"/>}
                             onClick={() => onEdit(index)}
                             title={t('mapLidarCorridors.edit')}/>
-                        <Button size="small" type="text" danger disabled={busy || editing}
+                        <Button size="small" type="text" danger disabled={busy || !editable || editing}
                             icon={<DeleteOutlined aria-hidden="true"/>}
                             onClick={() => onDelete(index)}
                             title={t('mapLidarCorridors.delete')}/>
@@ -156,7 +163,7 @@ export const LidarCorridorsPanel = ({
                         </Button>
                     </>
                 ) : (
-                    <Button size="small" icon={<EditOutlined aria-hidden="true"/>} disabled={busy} onClick={onStartDraw}>
+                    <Button size="small" icon={<EditOutlined aria-hidden="true"/>} disabled={busy || !editable} onClick={onStartDraw}>
                         {t('mapLidarCorridors.draw')}
                     </Button>
                 )}
