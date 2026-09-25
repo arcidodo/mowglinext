@@ -29,6 +29,7 @@
 #include <tf2_geometry_msgs/tf2_geometry_msgs.hpp>
 #include <tf2_ros/transform_listener.hpp>
 
+#include "mowgli_interfaces/ftc_abort_reason.hpp"
 #include "mowgli_nav2_plugins/ftc_carrot_lead.hpp"
 #include "mowgli_nav2_plugins/ftc_lattice_solver.hpp"
 #include "mowgli_nav2_plugins/ftc_obstacle_wait.hpp"
@@ -1279,7 +1280,12 @@ geometry_msgs::msg::TwistStamped FTCController::computeVelocityCommands(
   else if (checkCollision(config_.obstacle_lookahead))
   {
     is_crashed_ = true;
-    throw nav2_core::ControllerException("FTCController: collision detected along lookahead path.");
+    // Issue #743: marked as obstacle-caused (mowgli_interfaces/ftc_abort_
+    // reason.hpp) so FollowStrip's detour confirmation does not have to
+    // re-derive "was this an obstacle" from a different costmap/body model.
+    throw nav2_core::ControllerException(
+        std::string(mowgli_interfaces::ftc_abort_reason::kObstacleAbortMarker) +
+        "FTCController: collision detected along lookahead path.");
   }
 
   // 4. PID velocity computation.
@@ -2290,9 +2296,13 @@ bool FTCController::waitOrThrowForObstacle(const std::string& reason)
   if (elapsed > config_.obstacle_wait_timeout_s)
   {
     is_crashed_ = true;
-    throw nav2_core::ControllerException(std::string("FTCController: ") + reason +
-                                         ", aborting strip after " +
-                                         std::to_string(static_cast<int>(elapsed)) + "s wait.");
+    // Issue #743: this whole function exists to wait for, then abort on, an
+    // obstacle — mark it (mowgli_interfaces/ftc_abort_reason.hpp) so
+    // FollowStrip's detour confirmation does not have to re-derive "was this
+    // an obstacle" from a different costmap/body model.
+    throw nav2_core::ControllerException(
+        std::string(mowgli_interfaces::ftc_abort_reason::kObstacleAbortMarker) + "FTCController: " +
+        reason + ", aborting strip after " + std::to_string(static_cast<int>(elapsed)) + "s wait.");
   }
   obstacle_waiting_ = true;
   return true;

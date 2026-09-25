@@ -601,6 +601,19 @@ if(BUILD_TESTING)
     ${geometry_msgs_TARGETS}
   )
 
+  # ---- test_transit_avoidance ----
+  # Pure: session failed-transit-target avoidance (issue #732) — which
+  # blade-off inter-unit transits are short-circuited because they already
+  # failed earlier this session. No ROS message dependency (plain doubles).
+  ament_add_gtest(test_transit_avoidance
+    test/test_transit_avoidance.cpp
+  )
+
+  target_include_directories(test_transit_avoidance PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+    $<INSTALL_INTERFACE:include>
+  )
+
   # ---- test_follow_strip_dig ----
   # Tick-level: FollowStrip against fake /follow_path + /navigate_to_pose
   # servers. Covers dig recovery and short scan dropouts: the latter cut and
