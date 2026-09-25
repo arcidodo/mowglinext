@@ -92,8 +92,8 @@ TEST(TransitAvoidanceRecord, OldestTargetIsDroppedOnceTheBoundIsReached)
   // The very first target (index 0, at x=0) is still present...
   EXPECT_TRUE(isKnownFailedTransit(0.0, 0.0, targets));
   // ...until one more failure pushes it out.
-  targets = recordFailedTransit(
-      targets, {static_cast<double>(kMaxSessionFailedTransits) * 1.0, 0.0});
+  targets =
+      recordFailedTransit(targets, {static_cast<double>(kMaxSessionFailedTransits) * 1.0, 0.0});
   EXPECT_EQ(targets.size(), kMaxSessionFailedTransits);
   EXPECT_FALSE(isKnownFailedTransit(0.0, 0.0, targets));
 }
