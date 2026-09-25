@@ -20,6 +20,20 @@ interface LidarCorridorsPanelProps {
     /// Width in METRES (the panel edits centimetres).
     onChangeWidth: (index: number, widthM: number) => void;
     onDelete: (index: number) => void;
+    /// Index of the line being reshaped on the map (draft, not yet saved), or null.
+    editingIndex: number | null;
+    editPointCount: number;
+    editLengthM: number;
+    /// The next map click appends a point to the end of the edited line.
+    appending: boolean;
+    /// Too many vertices to show a handle each (e.g. after smoothing).
+    handlesHidden: boolean;
+    onEdit: (index: number) => void;
+    onToggleAppend: () => void;
+    onSmooth: () => void;
+    onSimplify: () => void;
+    onSaveEdit: () => void;
+    onCancelEdit: () => void;
 }
 
 /// Operator-drawn LiDAR-ignore lines. Inside a line's width the LiDAR returns
@@ -28,7 +42,10 @@ interface LidarCorridorsPanelProps {
 /// being pushed off it. Everywhere else the LiDAR keeps working normally.
 export const LidarCorridorsPanel = ({
     corridors, busy, drawing, drawPointCount, onStartDraw, onFinishDraw, onCancelDraw, onChangeWidth, onDelete,
+    editingIndex, editPointCount, editLengthM, appending, handlesHidden,
+    onEdit, onToggleAppend, onSmooth, onSimplify, onSaveEdit, onCancelEdit,
 }: LidarCorridorsPanelProps) => {
+    const editing = editingIndex !== null;
     const {colors} = useThemeMode();
     const {t} = useTranslation();
 
@@ -80,7 +97,11 @@ export const LidarCorridorsPanel = ({
                                 if (typeof value === 'number') onChangeWidth(index, value / 100);
                             }}
                         />
-                        <Button size="small" type="text" danger disabled={busy}
+                        <Button size="small" type="text" disabled={busy || drawing || editing}
+                            icon={<EditOutlined aria-hidden="true"/>}
+                            onClick={() => onEdit(index)}
+                            title={t('mapLidarCorridors.edit')}/>
+                        <Button size="small" type="text" danger disabled={busy || editing}
                             icon={<DeleteOutlined aria-hidden="true"/>}
                             onClick={() => onDelete(index)}
                             title={t('mapLidarCorridors.delete')}/>
@@ -88,7 +109,40 @@ export const LidarCorridorsPanel = ({
                 ))}
             </div>
             <div style={{padding: '6px 12px 10px', display: 'flex', gap: 6, flexWrap: 'wrap'}}>
-                {drawing ? (
+                {editing ? (
+                    <>
+                        <div style={{width: '100%', fontSize: 11, color: colors.muted}}>
+                            {t('mapLidarCorridors.editing', {
+                                points: editPointCount,
+                                length: editLengthM.toFixed(1),
+                            })}
+                            {handlesHidden ? ` ${t('mapLidarCorridors.handlesHidden')}` : ''}
+                        </div>
+                        <Button size="small" type={appending ? 'primary' : 'default'} disabled={busy}
+                            onClick={onToggleAppend} title={t('mapLidarCorridors.appendTooltip')}>
+                            {t('mapLidarCorridors.append')}
+                        </Button>
+                        <Button size="small" disabled={busy || editPointCount < 3} onClick={onSmooth}
+                            title={t('mapLidarCorridors.smoothTooltip')}>
+                            {t('mapLidarCorridors.smooth')}
+                        </Button>
+                        <Button size="small" disabled={busy || editPointCount < 3} onClick={onSimplify}
+                            title={t('mapLidarCorridors.simplifyTooltip')}>
+                            {t('mapLidarCorridors.simplify')}
+                        </Button>
+                        <Button size="small" type="primary" icon={<CheckOutlined aria-hidden="true"/>}
+                            disabled={busy} onClick={onSaveEdit}>
+                            {t('mapLidarCorridors.save')}
+                        </Button>
+                        <Button size="small" icon={<CloseOutlined aria-hidden="true"/>} disabled={busy}
+                            onClick={onCancelEdit}>
+                            {t('mapLidarCorridors.cancel')}
+                        </Button>
+                        <div style={{width: '100%', fontSize: 11, color: colors.muted}}>
+                            {t('mapLidarCorridors.editHint')}
+                        </div>
+                    </>
+                ) : drawing ? (
                     <>
                         <div style={{width: '100%', fontSize: 11, color: colors.muted}}>
                             {t('mapLidarCorridors.drawing', {count: drawPointCount})}

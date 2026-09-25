@@ -1751,7 +1751,18 @@
     "finish": "Finish line",
     "cancel": "Cancel",
     "draw": "Draw ignore line",
-    "saveFailed": "Could not save the ignore lines"
+    "saveFailed": "Could not save the ignore lines",
+    "edit": "Reshape this line",
+    "editing": "Editing: {{points}} points, {{length}} m.",
+    "handlesHidden": "Too many points to show handles - use Simplify.",
+    "append": "Add point at end",
+    "appendTooltip": "Then click on the map to extend the line",
+    "smooth": "Make curved",
+    "smoothTooltip": "Round the line through its points (adds points along the curve)",
+    "simplify": "Simplify",
+    "simplifyTooltip": "Remove points that barely change the shape",
+    "save": "Save changes",
+    "editHint": "Drag a point to move it, click a + to add a point, double-click a point to remove it."
   },
   "mapObstacleProposals": {
     "header": "Obstacle proposals ({{count}})",
