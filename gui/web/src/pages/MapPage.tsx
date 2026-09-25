@@ -842,7 +842,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         const next = lidarCorridors.corridors.map((c) => {
             const f = byId.get(corridorDrawId(c));
             if (!f || f.geometry.type !== "LineString") return c;
-            const points = (f.geometry.coordinates as Position[]).map(([lng, lat]) => {
+            const points = f.geometry.coordinates.map(([lng, lat]) => {
                 const [x, y] = itranspose(offsetX, offsetY, datum, lat, lng);
                 return {x, y, z: 0};
             });
