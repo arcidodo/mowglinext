@@ -1752,6 +1752,7 @@
     "cancel": "Cancel",
     "draw": "Draw ignore line",
     "saveFailed": "Could not save the ignore lines",
+    "lockedHint": "Switch to map edit mode to change these lines.",
     "edit": "Reshape this line",
     "editing": "Editing: {{points}} points, {{length}} m.",
     "handlesHidden": "Too many points to show handles - use Simplify.",
