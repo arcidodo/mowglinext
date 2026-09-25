@@ -2074,8 +2074,8 @@ bool FollowStrip::tryStartDetour(const std::shared_ptr<BTContext>& ctx)
   // essentially the same point every time. Check it FIRST and skip the whole
   // dance if a detour from here already failed this session.
   if (isKnownFailedTransit(poses[stuck].pose.position.x,
-                            poses[stuck].pose.position.y,
-                            ctx->session_failed_transit_targets))
+                           poses[stuck].pose.position.y,
+                           ctx->session_failed_transit_targets))
   {
     RCLCPP_INFO(ctx->node->get_logger(),
                 "FollowStrip: unit %zu/%zu — a detour from here already failed this session, not "
