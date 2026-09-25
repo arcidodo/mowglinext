@@ -446,13 +446,15 @@ public:
   /// apply_ground_filter's stale-IMU case: better to keep seeing a corridor's
   /// hedge than to silently blind the robot near one while it doesn't
   /// actually know where it is.
-  static void apply_corridor_ignore_filter(sensor_msgs::msg::LaserScan& io,
-                                           const std::vector<Corridor>& corridors,
-                                           const std::optional<Pose2D>& robot_pose_map,
-                                           const LidarExtrinsics& extrinsics)
+  /// Returns how many beams were suppressed (0 when it was a no-op).
+  static std::size_t apply_corridor_ignore_filter(sensor_msgs::msg::LaserScan& io,
+                                                  const std::vector<Corridor>& corridors,
+                                                  const std::optional<Pose2D>& robot_pose_map,
+                                                  const LidarExtrinsics& extrinsics)
   {
     if (corridors.empty() || !robot_pose_map.has_value())
-      return;
+      return 0;
+    std::size_t suppressed = 0;
     const Pose2D& pose = *robot_pose_map;
     const float inf = std::numeric_limits<float>::infinity();
     const double a0 = io.angle_min;
@@ -484,10 +486,29 @@ public:
         if (point_within_corridor(px, py, corridor))
         {
           r = inf;
+          ++suppressed;
           break;
         }
       }
     }
+    return suppressed;
+  }
+
+  /// Smallest distance from (px, py) to any corridor polyline; +inf if none.
+  /// Diagnostics only (tells whether the robot is anywhere near a drawn line).
+  static double distance_to_nearest_corridor(double px,
+                                             double py,
+                                             const std::vector<Corridor>& corridors)
+  {
+    double best = std::numeric_limits<double>::infinity();
+    for (const auto& corridor : corridors)
+    {
+      for (std::size_t i = 0; i + 1 < corridor.polyline.size(); ++i)
+        best = std::min(
+            best,
+            distance_point_to_segment(px, py, corridor.polyline[i], corridor.polyline[i + 1]));
+    }
+    return best;
   }
 
 private:
@@ -608,10 +629,28 @@ private:
                              corridor_pose_max_age_s_);
       }
     }
-    apply_corridor_ignore_filter(out,
-                                 last_corridors_,
-                                 pose_for_corridor_filter,
-                                 LidarExtrinsics{lidar_x_m_, lidar_y_m_, lidar_mount_yaw_});
+    const std::size_t corridor_suppressed =
+        apply_corridor_ignore_filter(out,
+                                     last_corridors_,
+                                     pose_for_corridor_filter,
+                                     LidarExtrinsics{lidar_x_m_, lidar_y_m_, lidar_mount_yaw_});
+    if (pose_for_corridor_filter.has_value())
+    {
+      // Throttled diagnostics: is the robot near a drawn line, and did the
+      // filter actually drop any beams? (field 2026-09-25: no way to tell.)
+      RCLCPP_INFO_THROTTLE(
+          get_logger(),
+          *get_clock(),
+          5000,
+          "corridor filter: robot (%.2f, %.2f) is %.2f m from the nearest line, %zu beam(s) "
+          "suppressed this scan",
+          pose_for_corridor_filter->x,
+          pose_for_corridor_filter->y,
+          distance_to_nearest_corridor(pose_for_corridor_filter->x,
+                                       pose_for_corridor_filter->y,
+                                       last_corridors_),
+          corridor_suppressed);
+    }
 
     // SAFETY: collision_monitor gets the scan with chassis/dock self-returns
     // blanked but WITHOUT the gravity ground filter applied. The ground filter
