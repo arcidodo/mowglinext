@@ -7,7 +7,7 @@ import React, {useCallback, useEffect, useMemo, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {MapArea, Map as MapType} from "../types/ros.ts";
 import DrawControl from "../components/DrawControl.tsx";
-import Map, {Layer, Marker, Source} from 'react-map-gl/mapbox';
+import Map, {Layer, Source} from 'react-map-gl/mapbox';
 import type {Map as MapboxMap} from 'mapbox-gl';
 import type {Feature} from 'geojson';
 import {FeatureCollection, Position} from "geojson";
