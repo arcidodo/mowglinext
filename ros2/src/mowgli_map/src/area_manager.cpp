@@ -459,10 +459,10 @@ void MapServerNode::on_clear_map(const std_srvs::srv::Trigger::Request::SharedPt
   speed_filter_info_sent_ = false;
   masks_dirty_ = true;
   defer_mask_rebuild();
-  // A full map clear removes LiDAR-ignore corridors too (never reusing an
-  // id, same as next_area_id_ — see next_lidar_corridor_id_'s doc comment).
-  lidar_ignore_corridors_.clear();
-  publish_lidar_ignore_corridors();
+  // LiDAR-ignore corridors are deliberately NOT cleared here: the GUI's map
+  // save is clear_map + add_area per area, so clearing them would wipe every
+  // corridor on each map edit (field log 2026-09-25: a line lived ~5 s).
+  // They have their own ~/clear_lidar_ignore_corridors.
 
   res->success = true;
   res->message = "All map layers and areas cleared.";
