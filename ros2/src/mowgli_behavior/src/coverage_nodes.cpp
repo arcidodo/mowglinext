@@ -1363,7 +1363,8 @@ BT::NodeStatus FollowStrip::onRunning()
       {
         return BT::NodeStatus::RUNNING;  // bounded wait for the nav2 result
       }
-      if (isStartPoseBlocked(outcome->kind))
+      const bool start_pose_blocked = isStartPoseBlocked(outcome->kind);
+      if (start_pose_blocked)
       {
         ++swaths_skipped_start_occupied_;
         RCLCPP_WARN(ctx->node->get_logger(),
@@ -1379,18 +1380,56 @@ BT::NodeStatus FollowStrip::onRunning()
       else
       {
         RCLCPP_WARN(ctx->node->get_logger(),
-                    "FollowStrip: segment %zu/%zu transit failed — nav2 %s (code %u): \"%s\" — "
-                    "skipping",
+                    "FollowStrip: segment %zu/%zu transit failed — nav2 %s (code %u): \"%s\"",
                     swath_idx_ + 1,
                     swaths_.size(),
                     transitFailureName(outcome->kind),
                     static_cast<unsigned>(outcome->error_code),
                     outcome->error_msg.c_str());
+      }
+      // issue #732 (detour half): a detour's OWN resume-transit failing must
+      // NOT immediately discard the rest of the unit. max_detours_per_segment_
+      // (the "DETOUR N/5" budget already logged by tryStartDetour) exists
+      // precisely to allow another attempt — a different, hopefully-clear
+      // resume point found fresh against the live costmap, or the same
+      // stretch once a transient blockage (foot traffic, a stray LiDAR
+      // return) has passed — before falling back to skipping the whole unit.
+      // Before this fix that budget was never reachable from here: the FIRST
+      // detour's own resume-transit failing always fell straight through to
+      // advance(), abandoning everything from the resume point onward for the
+      // rest of this pass — field-observed 2026-09-28 losing most of a
+      // 2507-pose unit (several headland rings) after "DETOUR 1/5" and one
+      // failed 0.81 m resume transit, with 4 of the 5 budgeted attempts never
+      // used. Excluded for start_pose_blocked: that failure is about the
+      // robot's OWN parked position, which searching further ahead along the
+      // unit cannot fix. tryStartDetour() re-checks the detour budget (and the
+      // live costmap, and session_failed_transit_targets for the NEW resume
+      // point it searches for) itself and declines once exhausted, so this
+      // cannot loop forever on one unit — it just stops retrying and falls
+      // through below, same as before this fix.
+      const bool had_detour_in_flight = last_detour_stuck_point_.has_value();
+      const geometry_msgs::msg::Point prior_stuck_point =
+          had_detour_in_flight ? *last_detour_stuck_point_ : geometry_msgs::msg::Point{};
+      transit_active_ = false;
+      transit_abort_seen_ = false;
+      last_detour_stuck_point_.reset();
+      nav_handle_.reset();
+      if (!start_pose_blocked && had_detour_in_flight && tryStartDetour(ctx))
+      {
+        return BT::NodeStatus::RUNNING;
+      }
+      if (!start_pose_blocked)
+      {
         // issue #732: remember this target for the rest of the session so a
         // later dispatch of this area does not repeat the identical failing
         // transit — see session_failed_transit_targets's doc comment
-        // (bt_context.hpp). NOT recorded for a start-pose-blocked refusal
-        // above: that failure is about the robot's OWN pose, not this target.
+        // (bt_context.hpp). NOT recorded for a start-pose-blocked refusal:
+        // that failure is about the robot's OWN pose, not this target.
+        // Deliberately recorded HERE — after the retry above either wasn't
+        // attempted or itself declined — not earlier: recording it before
+        // trying tryStartDetour() would make that very retry immediately
+        // self-block on isKnownFailedTransit against the target it is about
+        // to search around.
         if (swath_idx_ < swaths_.size())
         {
           const auto& target = swaths_[swath_idx_].poses.front().pose.position;
@@ -1403,17 +1442,13 @@ BT::NodeStatus FollowStrip::onRunning()
         // this area will hit again, unlike the resume pose above which is
         // re-derived from the live costmap and can drift past the merge
         // radius between attempts.
-        if (last_detour_stuck_point_.has_value())
+        if (had_detour_in_flight)
         {
           ctx->session_failed_transit_targets =
               recordFailedTransit(ctx->session_failed_transit_targets,
-                                  {last_detour_stuck_point_->x, last_detour_stuck_point_->y});
+                                  {prior_stuck_point.x, prior_stuck_point.y});
         }
       }
-      transit_active_ = false;
-      transit_abort_seen_ = false;
-      last_detour_stuck_point_.reset();
-      nav_handle_.reset();
       ++swaths_skipped_;
       return advance();
     }
