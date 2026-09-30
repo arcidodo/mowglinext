@@ -13,16 +13,15 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 
 | Task | Start here |
 |------|------------|
-| Trace an install end-to-end (15 steps) | `install/mowglinext.sh` `main()` (each `progress_run*` names the lib function) |
+| Trace an install end-to-end (12 steps) / a manual `update` (5) / `repair` (9) | `install/mowglinext.sh` `run_install()` / `run_update()` / `run_repair()`, dispatched from `main()` on `INSTALL_MODE` (positional `install|update|repair|check`, parsed in `config.sh` `parse_args`; `--non-interactive` makes `prompt`/`confirm` return their defaults) |
 | Run a single install step in isolation (issue #632) | `install/mowglinext.sh` `run_only_step()`/`list_only_steps()`, dispatched from `main()`'s `ONLY_STEP` branch (`--only=<step>`, parsed in `config.sh` `parse_args`) — skips `select_repo_branch`/`select_language` on purpose; see `install/tests/test_only_step.sh` |
 | Add / change a `docker/.env` key | `install/lib/env.sh` `setup_env` L210–374 (defaults L216–301, writes L325–367) + whitelist `install/lib/state.sh` `is_allowed_installer_key` L11–33 + guard `install/tests/test_env_output.sh` L38 |
 | "Which env var starts which container?" | `install/lib/compose.sh` `build_compose_stack` L52–138 — see the env→service table below |
 | Change how the merged compose is produced | `install/lib/compose.sh` `write_compose_merged` L208–244 (`docker compose config --no-interpolate`), pure-Bash fallback L169–206 |
 | Add a CLI flag / web-composer preset key | `install/lib/config.sh` `parse_args` L842–1078; preset loader `install/lib/state.sh` `load_preset_file` L133; the web bootstrap `docs/install.sh` forwards choices as CLI flags (it does not write `.preset`) |
-| Change what the installer writes into `mowgli_robot.yaml` | `install/lib/config.sh` `write_config` L1327–1443 (line-splice via `_yaml_patch_key` L1286) — it patches ONLY the ~25 keys listed there |
+| Change what the installer writes into `mowgli_robot.yaml` | `install/lib/config.sh` `write_config` — seeds the file ONLY when absent (template + GNSS link + `lidar_enabled`); an existing file is never written (GUI-owned, root-owned by the containers) |
 | Change the SPARSE seed shipped to new robots | `install/config/mowgli/mowgli_robot.yaml` (CLAUDE.md Invariant 15 — defaults belong in `ros2/src/mowgli_bringup/config/mowgli_robot.yaml`) |
 | GNSS backend/stack resolution logic | `install/lib/config.sh` L462–840 (`normalize_*`, `effective_gnss_backend` L609, `effective_gnss_stack` L625, `compose_gnss_service_name` L814) |
-| GNSS interactive probing / baud upgrade | `install/lib/gps.sh` `configure_gps` L66; `install/lib/serial_probe.sh`; `install/lib/ublox_config.sh`, `install/lib/unicore_config.sh` |
 | LiDAR selection (type/connection/baud) | `install/lib/lidar.sh` `configure_lidar` L3–116 |
 | udev symlinks (`/dev/mowgli`, `/dev/gps`, `/dev/lidar`, `/dev/tfluna_*`) | `install/lib/udev.sh` `build_dynamic_udev_rules` L91–152, `install_udev_rules` L154 (writes `/etc/udev/rules.d/50-mowgli.rules`) |
 | UART overlays / Pi-5 boot tweaks / rc.local | `install/lib/uart.sh` `enable_all_platform_uarts` L124, `configure_raspberry_pi_5_hardware` L94; `install/lib/rc_local.sh` (installs `rc-local.service`) |
@@ -51,24 +50,19 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 | `lib/state.sh` | 173 | Strict KV parser for `install/.preset` and `docker/.env` + the allowed-key whitelist; preset consume/backup |
 | `lib/udev.sh` | 232 | Static + dynamic udev rule generation and install |
 | `lib/backend_choice.sh` | 271 | Mowgli-STM32 vs Pixhawk/MAVROS selection, MAVROS device detect, GCS URL |
-| `lib/tools.sh` | 205 | Optional host tools + `/usr/local/bin/mowgli-{up,down,restart,logs,ps,pull,check,gps-logs,lidar-logs,shell,status}` |
+| `lib/tools.sh` | ~120 | `/usr/local/bin/mowgli-{up,down,restart,logs,ps,pull,check,gps-logs,lidar-logs,shell,status}` (always installed; the optional ctop/mc/ranger/debug tools were retired 2026-09-29) |
 | `lib/progress.sh` | 212 | Step progress bar/spinner, install log capture (`init_install_logs`) |
-| `lib/gps.sh` | 176 | `pick_serial_by_id`, `preset_key_loaded`, `configure_gps` |
+| `lib/gps.sh` | ~110 | `pick_serial_by_id`, `preset_key_loaded`, `configure_gps` — transport + port ONLY; receiver family/baud are first-boot defaults, the sidecar (`gnss_config_apply`) and GUI own the receiver configuration |
 | `lib/platform.sh` | 163 | CPU arch / board family detection, `assert_supported_platform` |
 | `lib/uart.sh` | ~215 | Boot-config line upsert; `required_uart_overlays()` derives which of `dtoverlay=uart1..5` the configured GNSS/LiDAR/TF-Luna ports actually need (issue #631 — used to enable all five unconditionally) — runs after GPS/LiDAR/rangefinder config, not before; Bluetooth disable, Pi-5 USB/fan params |
 | `lib/common.sh` | 135 | `info/warn/fail/error/step/prompt/confirm`, `detect_uart_ports`, `pick_uart_port`, `require_root*` |
 | `lib/motd.sh` | 127 | Writes `/etc/profile.d/mowgli-motd.sh` (reads `~/mowglinext/docker/.env`) |
-| `lib/range.sh` | 118 | TF-Luna front/edge rangefinder prompts |
 | `lib/lidar.sh` | 120 | LiDAR type/connection/baud selection + `LIDAR_UART_RULE` |
-| `lib/ublox_config.sh` | 114 | u-blox detect + 921600 baud upgrade (via `lib/ublox_config_helper.py`) |
-| `lib/unicore_config.sh` | 107 | Unicore UM98x `CONFIG COM1` baud upgrade |
-| `lib/serial_probe.sh` | 100 | NMEA baud probing, `prompt_or_probe_baud` |
 | `lib/docker.sh` | 97 | `docker_cmd`/`docker_compose_cmd` (sg-docker wrapper), `install_docker` |
 | `lib/system.sh` | 77 | apt update/upgrade, release pinning |
 | `lib/banner.sh` | 64 | Banner + final `print_summary` (issue list) |
 | `lib/rc_local.sh` | 50 | `/etc/rc.local` + `rc-local.service` (Pi UART platforms only) |
 | `lib/i18n.sh` | 42 | `load_locale` / `select_language` |
-| `lib/ublox_config_helper.py` | 192 | UBX CFG frame builder used by `ublox_config.sh` |
 | `lib/config.local.sh.example` | 14 | Template for the gitignored `config.local.sh` fork override of `REPO_URL` (drives the GHCR prefix) |
 | **`install/locale/`** | | |
 | `locale/en.sh`, `locale/fr.sh` | 73 / 73 | `MSG_*` strings sourced by `load_locale` |
@@ -77,14 +71,10 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 | `compose/docker-compose.gui.yml` | 36 | `gui` (mowgli-gui), `pid: host`, docker socket, `FOXGLOVE_URL=ws://localhost:8765` |
 | `compose/docker-compose.gps.yml` | 68 | `gps` (mowgli-gps) — canonical Universal GNSS sidecar; passes `GNSS_*` with **no** hard defaults |
 | `compose/docker-compose.mqtt.yml` | 19 | `mosquitto` (mowgli-mqtt), ports 1883/9001 |
-| `compose/docker-compose.watchtower.yml` | 16 | `watchtower` (mowgli-watchtower), label-gated, 4 h poll |
 | `compose/docker-compose.lidar-ldlidar.yml` | 37 | `lidar` (mowgli-lidar), no command override — image CMD |
 | `compose/docker-compose.lidar-rplidar.yml` | 38 | `lidar` with `rplidar_a2m8_launch.py` + `LIDAR_PORT`/`LIDAR_BAUD` |
 | `compose/docker-compose.lidar-stl27l.yml` | 38 | `lidar` with `ldlidar_stl_ros2_node` + `LIDAR_MODEL`/`LIDAR_PORT`/`LIDAR_BAUD` |
 | `compose/docker-compose.mavros.yml` | 49 | `mavros` (mowgli-mavros) + `ntrip` (mowgli-ntrip) |
-| `compose/docker-compose.vesc.yml` | 20 | `vesc` — gated off (`vesc_service_available` always returns 1) |
-| `compose/docker-compose.tfluna-front.yml` / `-edge.yml` | 8 / 8 | TF-Luna — gated off (image placeholder `ghcr.io/...`) |
-| `compose/docker-compose.foxglove.yml` | 5 | **Unused** — no code selects it; overrides `mowgli.command` with a non-existent `enable_coverage:=` arg |
 | **`install/config/`** (seeds copied to `docker/config/`) | | |
 | `config/mowgli/mowgli_robot.yaml` | 79 | The SPARSE installed robot config seed (Invariant 15) |
 | `config/cyclonedds.xml` | ~45 | Loopback-only DDS: `AllowMulticast=false`, iface `lo`, `MaxAutoParticipantIndex=500`, unicast peer `localhost` with `PruneDelay="inf"` (Cyclone 11 otherwise stops re-announcing to a peer port after 30 s — a dropped boot-burst SPDP then leaves two participants blind to each other) |
@@ -105,7 +95,6 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 | `tests/test_state_parsing.sh` | 218 | Strict preset/.env parser, no shell execution, preset consumption |
 | `tests/test_idempotency.sh` | 180 | Re-runs preserve YAML GNSS config and create `.old.<ts>` backups |
 | `tests/test_negative.sh` | 168 | Bad flags, invalid `GNSS_BACKEND`, missing tooling |
-| `tests/test_ublox_config.sh` / `test_unicore_config.sh` | 161 / 89 | Baud-upgrade command sequences and no-op guards |
 | `tests/test_lidar_matrix.sh` | 150 | `LIDAR_TYPE` × connection → fragment + baud + `LIDAR_IMAGE` |
 | `tests/test_robot_yaml.sh` | 115 | Installed yaml shape, datum placeholders, no legacy `mower_config.sh` |
 | `tests/test_bootstrap_repo_update.sh` | 126 | `docs/install.sh` stays conservative on existing checkouts; untracked files do not block it |
@@ -113,11 +102,10 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 | `tests/test_compose_legacy_adoption.sh` | 130 | Plain installer records `stack-definition.sha256`; baseline-less Compose needs consent (`installer-stack` exit 3) |
 | `tests/test_hardware_presets.sh` | 103 | mowgli vs mavros backend matrix |
 | `tests/test_check_mode.sh` | 101 | `--check` targets the right services/commands |
-| `tests/test_optional_features.sh` | 97 | TF-Luna / VESC never leak into the generated compose |
+| `tests/test_optional_features.sh` | ~60 | Retired TF-Luna / VESC fragments are gone and stale `.env` keys are scrubbed |
 | `tests/test_udev_install.sh` | 87 | `install_udev_rules` under `set -u` |
 | `tests/test_gps_matrix.sh` | 82 | UART and USB-by-id GNSS paths |
 | `tests/test_config_dir_squat.sh` | 77 | `ensure_default_configs` heals a directory squatting a file mount |
-| `tests/test_serial_probe.sh` | 68 | NMEA baud detection / failure / manual fallback |
 | `tests/test_smoke.sh` | 58 | Default preset runs to completion, no network calls |
 | **`docker/`** | | |
 | `docker/stack.sh` | 178 | Dev-checkout stack manager reusing `install/lib/compose.sh` (`regen up down restart pull update logs ps config`) |
@@ -172,14 +160,14 @@ Coordinated updates: `install/deployment.json` owns the publication build list a
 | `ROS_DOMAIN_ID`, `RMW_IMPLEMENTATION`, `CYCLONEDDS_URI`, `ROS_AUTOMATIC_DISCOVERY_RANGE` | `x-ros2-env` anchor in every ROS fragment (base/gps/lidar-*/mavros/vesc; gui, mqtt, watchtower and tfluna carry none) | ROS services | container env | Cyclone DDS via `/cyclonedds.xml` |
 | `TFLUNA_FRONT_ENABLED` / `TFLUNA_EDGE_ENABLED` | `compose.sh` L119–125 via `effective_tfluna_*` | `mowgli-tfluna-front/-edge` | — | **gated off**: `range_services_available` (`config.sh` L354) returns 1 while the fragments carry the `ghcr.io/...` placeholder |
 | `ENABLE_VESC` | `compose.sh` L130 via `effective_vesc_enabled` | `mowgli-vesc` | `VESC_CAN_INTERFACE` | **gated off**: `vesc_service_available` L373 always returns 1 |
-| `ENABLE_MQTT` / `ENABLE_WATCHTOWER` | `docker/stack.sh` `filter_optional_fragments` L88–103 only | `mowgli-mqtt` / `mowgli-watchtower` | — | the full installer always includes both (`compose.sh` L60, L97) |
+| `ENABLE_MQTT` | `compose.sh` `build_compose_stack` and `docker/stack.sh` `filter_optional_fragments` | `mowgli-mqtt` | — | opt-in broker (`--mqtt=on`); `installer-stack` honours `MOWGLI_ENABLE_MQTT` on regeneration |
 | `MOWER_IP` | — | — | — | printed by the MOTD only (`lib/motd.sh` L76) |
 | `DISABLE_BLUETOOTH` | — | — | — | written but never read (Bluetooth is disabled unconditionally, `uart.sh` L146) |
 | `GNSS_BACKEND`, `GPS_PROTOCOL`, `HARDWARE_BACKEND` in `docker-compose.base.yml` L19–24 | — | `mowgli-ros2` | container env | **inert** — no file under `ros2/src` reads them |
 
 ### Compose services (container names, from `install/lib/checks.sh` L3–19)
 
-`mowgli`→`mowgli-ros2`, `gps`→`mowgli-gps`, `lidar`→`mowgli-lidar`, `gui`→`mowgli-gui`, `mosquitto`→`mowgli-mqtt`, `mavros`→`mowgli-mavros`, `ntrip`→`mowgli-ntrip`, `vesc`→`mowgli-vesc`, `tfluna_front`/`tfluna_edge`→`mowgli-tfluna-front`/`-edge`. Always composed: base + gui + mqtt + watchtower (`compose.sh` L58–60, L97). Named volume `mowgli_maps` → `/ros2_ws/maps` (base L47, L61) and also mounted into `gui` (gui L33).
+`mowgli`→`mowgli-ros2`, `gps`→`mowgli-gps`, `lidar`→`mowgli-lidar`, `gui`→`mowgli-gui`, `mosquitto`→`mowgli-mqtt`, `mavros`→`mowgli-mavros`, `ntrip`→`mowgli-ntrip`, `vesc`→`mowgli-vesc`, `tfluna_front`/`tfluna_edge`→`mowgli-tfluna-front`/`-edge`. Always composed: base + gui; mqtt only with `ENABLE_MQTT=true`; Watchtower removed 2026-09-29 (`compose.sh` `build_compose_stack`). Named volume `mowgli_maps` → `/ros2_ws/maps` (base L47, L61) and also mounted into `gui` (gui L33).
 
 ### Bind mounts (host → container)
 
