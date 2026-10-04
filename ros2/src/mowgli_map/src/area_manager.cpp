@@ -25,6 +25,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -1289,7 +1290,7 @@ void MapServerNode::on_save_areas(const std_srvs::srv::Trigger::Request::SharedP
 
   try
   {
-    save_areas_to_file(areas_file_path_);
+    save_areas_to_file(areas_file_path_, /*allow_empty_overwrite=*/true);
     res->success = true;
     res->message = "Areas saved to " + areas_file_path_;
     RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
@@ -1832,7 +1833,28 @@ std::string MapServerNode::polygon_to_string(const geometry_msgs::msg::Polygon& 
   return oss.str();
 }
 
-void MapServerNode::save_areas_to_file(const std::string& path)
+int MapServerNode::count_areas_in_file(const std::string& path)
+{
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line))
+  {
+    if (line.rfind("area_count:", 0) == 0)
+    {
+      try
+      {
+        return std::max(0, std::stoi(line.substr(std::string("area_count:").size())));
+      }
+      catch (const std::exception&)
+      {
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
+
+void MapServerNode::save_areas_to_file(const std::string& path, bool allow_empty_overwrite)
 {
   // Write a sibling temp file, flush it to the medium, then rename it over the
   // target. Opening `path` directly truncates the ONLY copy of the operator's
@@ -1944,6 +1966,25 @@ void MapServerNode::save_areas_to_file(const std::string& path)
   {
     std::remove(tmp_path.c_str());
     throw std::runtime_error("Writing " + tmp_path + " failed (disk full?)");
+  }
+
+  const int on_disk = count_areas_in_file(path);
+  if (areas_.empty() && on_disk > 0 && !allow_empty_overwrite)
+  {
+    std::remove(tmp_path.c_str());
+    throw std::runtime_error("refusing to replace " + path + " (" + std::to_string(on_disk) +
+                             " area(s)) by an empty map; only an explicit save_areas may");
+  }
+  if (on_disk > 0)
+  {
+    // Keep the version being replaced. Best effort: a failed copy must not block the save.
+    std::error_code ec;
+    std::filesystem::copy_file(
+        path, path + ".bak", std::filesystem::copy_options::overwrite_existing, ec);
+    if (ec)
+    {
+      RCLCPP_WARN(get_logger(), "Could not keep %s.bak: %s", path.c_str(), ec.message().c_str());
+    }
   }
   commit_file_atomically(tmp_path, path);
 }
@@ -2411,6 +2452,11 @@ void MapServerNode::get_mowing_area_for_test(
 }
 
 void MapServerNode::save_areas_for_test(const std::string& path)
+{
+  save_areas_to_file(path, /*allow_empty_overwrite=*/true);
+}
+
+void MapServerNode::save_areas_guarded_for_test(const std::string& path)
 {
   save_areas_to_file(path);
 }

@@ -349,6 +349,59 @@ TEST_F(AreaTypeTest, MowingAndNavigationAreasArePreservedSideBySide)
   }
 }
 
+// Field loss: areas.dat ended up holding only the LiDAR-ignore lines. Every IMPLICIT save
+// (add_area, ignore-line edits, the load-time re-stamps) writes whatever is in memory, which
+// is empty between clear_map and the first add_area or after a failed load - and the file
+// was replaced by that empty map. Only the explicit save_areas may do that now, and the
+// version being replaced is kept as <path>.bak.
+TEST_F(AreaTypeTest, ImplicitSaveNeverReplacesAMapWithAnEmptyOne)
+{
+  const std::string dir = std::getenv("TEST_TMPDIR") ? std::getenv("TEST_TMPDIR") : "/tmp";
+  const std::string path = dir + "/mowgli_areas_guard.dat";
+  const std::string empty_path = dir + "/mowgli_areas_guard_empty.dat";
+  std::remove(path.c_str());
+  std::remove((path + ".bak").c_str());
+
+  const auto area_count_in = [](const std::string& file)
+  {
+    std::ifstream in(file);
+    std::string line;
+    while (std::getline(in, line))
+    {
+      if (line.rfind("area_count:", 0) == 0)
+      {
+        return std::stoi(line.substr(11));
+      }
+    }
+    return -1;
+  };
+
+  ASSERT_TRUE(add_area("mow_lawn", make_rect(-3, -3, 0, 0), /*is_navigation=*/false));
+  ASSERT_TRUE(add_area("nav_corridor", make_rect(0, 0, 3, 3), /*is_navigation=*/true));
+  node_->save_areas_for_test(path);
+  ASSERT_EQ(area_count_in(path), 2);
+
+  // Memory goes empty (what clear_map, or a failed load, leaves behind).
+  {
+    std::ofstream out(empty_path);
+    out << "area_count: 0
+next_area_id: 1
+";
+  }
+  node_->load_areas_for_test(empty_path);
+
+  EXPECT_ANY_THROW(node_->save_areas_guarded_for_test(path))
+      << "an implicit save replaced a map with areas by an empty one";
+  EXPECT_EQ(area_count_in(path), 2) << "the map on disk must be untouched";
+  EXPECT_FALSE(std::ifstream(path + ".tmp").good()) << "a refused write left a temp file";
+
+  // The explicit save_areas (a deliberate "delete everything") still works, and the map it
+  // replaced is kept.
+  node_->save_areas_for_test(path);
+  EXPECT_EQ(area_count_in(path), 0);
+  EXPECT_EQ(area_count_in(path + ".bak"), 2) << "the replaced map must survive as .bak";
+}
+
 TEST_F(AreaTypeTest, NavigationAreaSurvivesSaveLoadRoundTrip)
 {
   ASSERT_TRUE(add_area("mow_lawn", make_rect(-3, -3, 0, 0), /*is_navigation=*/false));

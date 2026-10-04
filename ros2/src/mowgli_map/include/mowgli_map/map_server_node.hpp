@@ -236,6 +236,9 @@ public:
 
   /// Test-only: round-trip persistence through save/load_areas_to_file.
   void save_areas_for_test(const std::string& path);
+  /// Same write as an implicit save (add_area, ignore-line edit): throws if it would replace
+  /// a file with areas by an empty map.
+  void save_areas_guarded_for_test(const std::string& path);
   void load_areas_for_test(const std::string& path);
 
   /// Test-only: current area-list generation (mowglinext#637 phase 2).
@@ -720,7 +723,15 @@ private:
   static std::string polygon_to_string(const geometry_msgs::msg::Polygon& poly);
 
   /// Save areas and docking point to a YAML file.
-  void save_areas_to_file(const std::string& path);
+  /// Atomically write the areas file. Unless `allow_empty_overwrite`, REFUSES (throws) to
+  /// replace a file that holds areas by one that holds none: only the explicit save_areas
+  /// service may do that. Every implicit save (add_area, ignore-line edits, the load-time
+  /// re-stamps) runs against whatever is in memory, which is empty between clear_map and
+  /// the first add_area, or after a failed load — writing that out destroyed the operator's
+  /// map and left only the ignore lines. The file being replaced is kept as <path>.bak.
+  void save_areas_to_file(const std::string& path, bool allow_empty_overwrite = false);
+  /// area_count recorded in an areas file, or 0 when it is missing/unreadable.
+  static int count_areas_in_file(const std::string& path);
 
   /// fsync `tmp_path`, rename it over `path`, fsync the directory. Throws (and
   /// removes the temp file) if the data cannot be made durable; `path` is then
