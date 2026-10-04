@@ -155,6 +155,17 @@ if(BUILD_TESTING)
     mowgli_hardware_core
   )
 
+  # ---- test_odometry_publisher ----
+  ament_add_ros_isolated_gtest(test_odometry_publisher
+    test/test_odometry_publisher.cpp
+    src/odometry_publisher.cpp
+  )
+  target_link_libraries(test_odometry_publisher
+    mowgli_hardware_core
+    ${nav_msgs_TARGETS}
+    ${mowgli_interfaces_TARGETS}
+  )
+
   # ---- test_dig_detector ----
   # Header-only pure logic (dig_detector.hpp): no link against
   # mowgli_hardware_core needed, just the include path.
