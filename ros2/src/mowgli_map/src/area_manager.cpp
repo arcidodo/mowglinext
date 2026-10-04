@@ -1979,8 +1979,10 @@ void MapServerNode::save_areas_to_file(const std::string& path, bool allow_empty
   {
     // Keep the version being replaced. Best effort: a failed copy must not block the save.
     std::error_code ec;
-    std::filesystem::copy_file(
-        path, path + ".bak", std::filesystem::copy_options::overwrite_existing, ec);
+    std::filesystem::copy_file(path,
+                               path + ".bak",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
     if (ec)
     {
       RCLCPP_WARN(get_logger(), "Could not keep %s.bak: %s", path.c_str(), ec.message().c_str());

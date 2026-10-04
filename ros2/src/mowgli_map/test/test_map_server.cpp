@@ -384,9 +384,7 @@ TEST_F(AreaTypeTest, ImplicitSaveNeverReplacesAMapWithAnEmptyOne)
   // Memory goes empty (what clear_map, or a failed load, leaves behind).
   {
     std::ofstream out(empty_path);
-    out << "area_count: 0
-next_area_id: 1
-";
+    out << "area_count: 0\nnext_area_id: 1\n";
   }
   node_->load_areas_for_test(empty_path);
 
