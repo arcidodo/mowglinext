@@ -33,7 +33,7 @@
 | Heading calibration on undock / off-dock start | `src/calibration_nodes.cpp` (`RecordUndockStart`, `CalibrateHeadingFromUndock` line-fit → `/fusion_graph_node/set_pose`, `SeedYawFromMotion` drives via `/cmd_vel_teleop`) |
 | Dock-contact alignment log / dock_yaw drift check | `include/mowgli_behavior/dock_alignment.hpp` (`ComputeDockContactDelta`, `EvaluateDockYawDrift`) |
 | Battery % derivation, low-battery false trips | `src/battery_filter.cpp` (`BatteryVoltageFilter`, `batteryPercentFromVoltage`), `behavior_tree_node.cpp` :204-229 |
-| Rain handling (mode / debounce / dock-and-wait) | `src/condition_nodes.cpp` `IsNewRain`, `IsRainModeAtLeast`; `main_tree.xml` `RainGuard` :576-634 |
+| Rain handling (mode / debounce / dock-and-wait) | `src/condition_nodes.cpp` `IsNewRain`, `IsRainModeAtLeast`; `main_tree.xml` `RainGuard`. Dock-and-pause resume samples `IsCharging` after departure preparation; off-charger resume stops, publishes `RAIN_DOCK_FAILED`, clears the command and holds until the command guard halts it. `test/test_rain_resume.cpp` executes the production rain branch with deterministic motion/wait stubs. |
 | Obstacle-stuck / sensor-fault guards | `src/condition_nodes.cpp` `IsObstacleStuck`, `WasRecentlyInCollisionStop`, `IsScanStale`, `IsCollisionStopSustained`; `behavior_tree_node.cpp` :479-538 (collision_monitor + scan liveness latches) |
 | Idle Nav2 suspend (`idle_nav2_suspend`) | `src/navigation_nodes.cpp` `SetNav2Lifecycle` :170-255 (`/lifecycle_manager_navigation/manage_nodes`) |
 | Transit/mowing speed → live controllers | `src/navigation_nodes.cpp` `SetNavMode` :915-970 (`FollowPath.primary_controller.max_linear_vel`, `FollowCoveragePath.speed_fast` on `/controller_server`) |
