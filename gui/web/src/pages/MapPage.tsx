@@ -56,6 +56,8 @@ import {buildMapDisplayFeatures} from "./map/mapDisplayFeatures.ts";
 import {MapToolbar} from "./map/components/MapToolbar.tsx";
 import {MapToolbarMobile} from "./map/components/MapToolbarMobile.tsx";
 import {MapEditorToolbar} from "./map/components/MapEditorToolbar.tsx";
+import {RestoreMapBackupModal} from "./map/components/RestoreMapBackupModal.tsx";
+import {useMapBackups} from "./map/hooks/useMapBackups.ts";
 import {JoystickOverlay} from "./map/components/JoystickOverlay.tsx";
 import {useIsMobile} from "../hooks/useIsMobile.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
@@ -169,6 +171,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     // operator is editing (there is no side panel to hold the width field there).
     const [corridorWidthModalIndex, setCorridorWidthModalIndex] = useState<number | null>(null);
     const lidarCorridors = useLidarCorridors();
+    const mapBackups = useMapBackups();
+    const [restoreBackupOpen, setRestoreBackupOpen] = useState(false);
     // Snapshot of the corridor list taken the moment map-edit mode is
     // entered. Unlike areas/obstacles (which live only in local `features`
     // state until "Save Map"), corridor edits are written to map_server
@@ -404,13 +408,24 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     }, [_datumLat, _datumLon, map, offsetX, offsetY, datum, bearing])
 
     const {
-        hasUnsavedChanges, setHasUnsavedChanges, handleEditMap,
+        hasUnsavedChanges, setHasUnsavedChanges, handleEditMap, exitEditMode,
         handleUndo, handleRedo, historyIndex, editHistory,
     } = useMapEditHistory({
         features, setFeatures, editMap, setEditMap,
         extraUnsavedChanges: corridorsDirtySinceEdit,
         onDiscard: () => void revertCorridorsOnDiscard(),
+        // A copy of the map is made BEFORE the editor opens; no copy, no edit.
+        beforeEdit: mapBackups.backupBeforeEdit,
     });
+
+    // A map backup was restored: the editor's buffered features and the corridor snapshot
+    // describe the map that was just replaced, so leave the editor without reverting anything.
+    const handleBackupRestored = useCallback(() => {
+        corridorEditSnapshotRef.current = null;
+        setRestoreBackupOpen(false);
+        exitEditMode();
+        void lidarCorridors.reload();
+    }, [exitEditMode, lidarCorridors]);
 
     useEffect(() => {
         if (envs) {
@@ -1489,6 +1504,13 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 onSave={() => void handleSaveAreaModal()}
                 onCancel={cancelAreaModal}
             />
+            <RestoreMapBackupModal
+                open={restoreBackupOpen}
+                onClose={() => setRestoreBackupOpen(false)}
+                list={mapBackups.list}
+                restore={mapBackups.restore}
+                onRestored={handleBackupRestored}
+            />
             <EditLidarCorridorModal
                 key={corridorWidthModalIndex ?? 'none'}
                 corridor={corridorWidthModalIndex !== null ? lidarCorridors.corridors[corridorWidthModalIndex] ?? null : null}
@@ -1725,6 +1747,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         historyIndex={historyIndex}
                         editHistoryLength={editHistory.length}
                         mowingAreas={mowingAreas}
+                        onRestoreBackup={() => setRestoreBackupOpen(true)}
                         selectedFeatureCount={selectedFeatureIds.length}
                         onEditMap={handleEditMap}
                         onEditSelectedFeature={handleEditSelectedFeatureOrCorridor}
@@ -1801,6 +1824,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onEditSelectedFeature={handleEditSelectedFeatureOrCorridor}
                         onPlaceDock={handleDockPlacement}
                         dockPlacementMode={dockPlacementMode}
+                        onRestoreBackup={() => setRestoreBackupOpen(true)}
                     />
                 )}
                 {/* Desktop: View mode — bottom glass toolbar */}

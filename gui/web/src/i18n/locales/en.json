@@ -1720,7 +1720,8 @@
     "split": "Split (select 1, draw line)",
     "editProperties": "Edit properties",
     "clickToPlaceDock": "Click on map to place dock",
-    "placeDockPoint": "Place dock point"
+    "placeDockPoint": "Place dock point",
+    "restoreBackup": "Restore a previous map"
   },
   "mapShapePicker": {
     "square": "Square",
@@ -1910,6 +1911,24 @@
     "deleteAreaConfirmBody": "The selected area (and its obstacles) will be removed. You can undo before saving.",
     "deleteAreaConfirmOk": "Delete",
     "deleteAreaConfirmCancel": "Cancel"
+  },
+  "mapBackups": {
+    "title": "Restore a previous map",
+    "intro": "A copy of the map is made automatically every time the editor opens. The last {{keep}} are kept; older ones are deleted. Restoring replaces the current map (it is copied first, so you can undo it).",
+    "empty": "No map backups yet — one is made the next time you open the editor.",
+    "restore": "Restore",
+    "cancel": "Cancel",
+    "close": "Close",
+    "confirmTitle": "Restore this map?",
+    "confirmBody": "The map as it was on {{when}} ({{areas}} areas) replaces the current map. Unsaved edits are discarded.",
+    "restored": "Map restored",
+    "restoreFailed": "Could not restore the map",
+    "listFailed": "Could not load the map backups",
+    "backupFailed": "Could not back up the map — the editor stays closed",
+    "areas": "{{count}} areas",
+    "obstacles": "{{count}} obstacles",
+    "ignoreLines": "{{count}} ignore lines",
+    "menuItem": "Restore a previous map"
   },
   "mapFiles": {
     "areaSaved": "Area saved",

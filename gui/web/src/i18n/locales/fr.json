@@ -1716,7 +1716,8 @@
     "split": "Diviser (sélectionner 1, tracer une ligne)",
     "editProperties": "Modifier les propriétés",
     "clickToPlaceDock": "Cliquez sur la carte pour placer la base",
-    "placeDockPoint": "Placer le point de base"
+    "placeDockPoint": "Placer le point de base",
+    "restoreBackup": "Restaurer une carte précédente"
   },
   "mapShapePicker": {
     "square": "Carré",
@@ -1906,6 +1907,24 @@
     "deleteAreaConfirmBody": "La zone sélectionnée (et ses obstacles) sera supprimée. Vous pouvez annuler avant d’enregistrer.",
     "deleteAreaConfirmOk": "Supprimer",
     "deleteAreaConfirmCancel": "Annuler"
+  },
+  "mapBackups": {
+    "title": "Restaurer une carte précédente",
+    "intro": "Une copie de la carte est faite automatiquement à chaque ouverture de l'éditeur. Les {{keep}} dernières sont conservées ; les plus anciennes sont supprimées. La restauration remplace la carte actuelle (elle est copiée avant, donc réversible).",
+    "empty": "Aucune sauvegarde de carte pour l'instant — une est faite à la prochaine ouverture de l'éditeur.",
+    "restore": "Restaurer",
+    "cancel": "Annuler",
+    "close": "Fermer",
+    "confirmTitle": "Restaurer cette carte ?",
+    "confirmBody": "La carte telle qu'elle était le {{when}} ({{areas}} zones) remplace la carte actuelle. Les modifications non enregistrées sont perdues.",
+    "restored": "Carte restaurée",
+    "restoreFailed": "Impossible de restaurer la carte",
+    "listFailed": "Impossible de charger les sauvegardes de la carte",
+    "backupFailed": "Impossible de sauvegarder la carte — l'éditeur reste fermé",
+    "areas": "{{count}} zones",
+    "obstacles": "{{count}} obstacles",
+    "ignoreLines": "{{count}} lignes d'exclusion",
+    "menuItem": "Restaurer une carte précédente"
   },
   "mapFiles": {
     "areaSaved": "Zone enregistrée",

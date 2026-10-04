@@ -29,9 +29,13 @@ interface UseMapEditHistoryOptions {
     // below; this covers a corridor-only edit, which never touches
     // `features` and so would otherwise silently skip the confirm dialog).
     extraUnsavedChanges?: boolean;
+    // Runs before edit mode opens; the editor opens only when it resolves true
+    // (MapPage uses it to take a server-side copy of the map first). Absent =
+    // open at once, as before.
+    beforeEdit?: () => Promise<boolean>;
 }
 
-export function useMapEditHistory({features, setFeatures, editMap, setEditMap, onDiscard, extraUnsavedChanges}: UseMapEditHistoryOptions) {
+export function useMapEditHistory({features, setFeatures, editMap, setEditMap, onDiscard, extraUnsavedChanges, beforeEdit}: UseMapEditHistoryOptions) {
     const {modal} = App.useApp();
     const {t} = useTranslation();
     // History entries are PLAIN serialized snapshots, never the class
@@ -48,6 +52,10 @@ export function useMapEditHistory({features, setFeatures, editMap, setEditMap, o
     // undo/redo). The watcher effect skips it so entering edit mode leaves
     // history at length 1 with no dirty flag, and undo/redo don't re-push.
     const lastRecordedRef = useRef<Record<string, MowingFeature> | null>(null);
+    // The map may update while beforeEdit runs: open the editor on the LATEST features.
+    const featuresRef = useRef(features);
+    featuresRef.current = features;
+    const openingRef = useRef(false);
 
     function exitEditMode() {
         setEditHistory([]);
@@ -58,12 +66,25 @@ export function useMapEditHistory({features, setFeatures, editMap, setEditMap, o
         onDiscard?.();
     }
 
+    function enterEditMode() {
+        const current = featuresRef.current;
+        setEditHistory([serializeFeatures(current)]);
+        setHistoryIndex(0);
+        lastRecordedRef.current = current;
+        setEditMap(true);
+    }
+
     function handleEditMap() {
         if (!editMap) {
-            setEditHistory([serializeFeatures(features)]);
-            setHistoryIndex(0);
-            lastRecordedRef.current = features;
-            setEditMap(true);
+            if (!beforeEdit) {
+                enterEditMode();
+                return;
+            }
+            if (openingRef.current) return; // a second click while the copy is being made
+            openingRef.current = true;
+            void beforeEdit()
+                .then((ok) => { if (ok) enterEditMode(); })
+                .finally(() => { openingRef.current = false; });
         } else if (hasUnsavedChanges || extraUnsavedChanges) {
             modal.confirm({
                 title: t('mapEditHistory.discardTitle'),

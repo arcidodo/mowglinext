@@ -13,6 +13,7 @@ import {
     FormOutlined,
     PlusOutlined,
     AimOutlined,
+    HistoryOutlined,
 } from "@ant-design/icons";
 import AsyncButton from "../../../components/AsyncButton.tsx";
 import {ShapePickerDropdown} from "./ShapePickerDropdown.tsx";
@@ -39,6 +40,7 @@ interface MapEditorToolbarProps {
     onEditSelectedFeature?: () => void;
     onPlaceDock?: () => void;
     dockPlacementMode?: boolean;
+    onRestoreBackup?: () => void;
 }
 
 interface ToolButtonProps {
@@ -91,7 +93,7 @@ export const MapEditorToolbar = ({
     hasUnsavedChanges, historyIndex, editHistoryLength,
     selectedFeatureCount, onSaveMap, onCancel, onUndo, onRedo,
     onDrawPolygon, onDrawShape, onDrawEmoji, onDrawLidarCorridor, onTrash, onCombine, onSubtract, onSplit, onEditSelectedFeature,
-    onPlaceDock, dockPlacementMode,
+    onPlaceDock, dockPlacementMode, onRestoreBackup,
 }: MapEditorToolbarProps) => {
     const {colors, displayMode} = useThemeMode();
     const {t} = useTranslation();
@@ -145,6 +147,9 @@ export const MapEditorToolbar = ({
             </div>
         </Tooltip>
         <ToolButton icon={<CloseOutlined/>} tooltip={t('mapEditorToolbar.cancelEditing')} onClick={onCancel}/>
+        {onRestoreBackup && (
+            <ToolButton icon={<HistoryOutlined/>} tooltip={t('mapEditorToolbar.restoreBackup')} onClick={onRestoreBackup}/>
+        )}
 
         <div style={{height: 1, background: colors.borderSubtle, margin: '2px 4px'}}/>
 
