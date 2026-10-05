@@ -670,10 +670,18 @@ before entering maintenance. Undeclared volumes are rejected before containers
 stop; being absent from Compose does not make image-created storage stateless.
 
 The status/history view retains the most recent 20 completed transactions.
-Recovery archives and tagged previous images are retained, not automatically
-pruned in this first implementation. Monitor storage and keep the backups/tags
-referenced by the current journal and rollback history. Capacity failures stop an
-update; they never trigger deletion of recovery data.
+Recovery data is bounded to the **two most recent rollbacks**: the active
+transaction and the one it replaced, i.e. what two consecutive rollbacks can
+reach. When a transaction finishes (committed or rolled back), and once at worker
+startup, the updater deletes every other `backups/<job>` archive — including the
+`failed-*` data set aside by a rollback that has itself completed — removes the
+matching `mowgli-rollback:<job>-<service>` tags, and deletes the images only
+those tags or the journal kept alive. An image is deleted only if nothing
+retained needs it and no tag names it any more; an operator-tagged image and an
+image a container still uses are left alone. The journal forgets a pruned backup
+before it is deleted, so rollback is never offered against a missing archive.
+Nothing is pruned while a transaction is pending or requires recovery, and a
+capacity failure never triggers deletion of the data that transaction needs.
 
 ## Publishing and contributor reference
 
