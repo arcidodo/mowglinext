@@ -144,6 +144,23 @@ TEST(CoveragePreview, SimplifiedRingStaysWithinTolerance)
   }
 }
 
+TEST(CoveragePreview, ARingThatDoublesBackKeepsItsFarVertex)
+{
+  // Out along the x axis and back again: the far vertex is collinear with the
+  // chord from the first to the last vertex, yet 10 m beyond its end. Measuring
+  // to the chord's infinite line would drop it and cut the ring short.
+  BoustrophedonPlan plan;
+  plan.rings.push_back({{0.0, 0.0}, {5.0, 0.0}, {10.0, 0.0}, {7.0, 0.0}, {5.0, 0.0}});
+
+  const CoveragePreview preview = summarisePlanForPreview(plan);
+
+  ASSERT_EQ(preview.rings.size(), 1u);
+  double max_x = 0.0;
+  for (const Point& p : preview.rings[0])
+    max_x = std::max(max_x, p.first);
+  EXPECT_NEAR(max_x, 10.0, 1e-9);
+}
+
 TEST(CoveragePreview, SimplificationKeepsTheDriveDirection)
 {
   BoustrophedonPlan plan;
