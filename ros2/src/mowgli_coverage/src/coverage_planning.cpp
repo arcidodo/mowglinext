@@ -1821,9 +1821,8 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // PASS as [outer, hole, outer, hole, …], so consecutive concentric OUTER rings
   // are interleaved with the field-centre hole rings. Driven in that raw order the
   // path jumps outer-ring → hole-ring → outer-ring every pass, and each jump is a
-  // field-crossing relocation the join-gap split below (Split A) turns into a
-  // spurious blade-off Nav2 transit (3–4 extra transits, purely an ordering
-  // artifact). Partition into outer-boundary rings FIRST (outermost-first order
+  // field-crossing relocation adds a long connector or a blade-off transit.
+  // Partition into outer-boundary rings FIRST (outermost-first order
   // preserved) then the obstacle-encircling rings, so each group drives
   // contiguously and only ONE relocation separates the two. A ring is an OUTER
   // ring iff it encloses a MAINLAND point (a swath endpoint): the mainland lies
@@ -1833,6 +1832,7 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // GEOMETRY is untouched — only the order the loops are appended.
   std::vector<std::size_t> ring_order;
   ring_order.reserve(plan.rings.size());
+  std::size_t outer_ring_count = plan.rings.size();
   if (!plan.swaths.empty())
   {
     const double probe_x =
@@ -1851,6 +1851,7 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
         hole_rings.push_back(i);  // encircles a hole
       }
     }
+    outer_ring_count = ring_order.size();
     ring_order.insert(ring_order.end(), hole_rings.begin(), hole_rings.end());
   }
   else
@@ -1862,9 +1863,32 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   }
 
   std::vector<std::vector<std::pair<double, double>>> segs;
-  for (const std::size_t ring_idx : ring_order)
+  for (std::size_t pos = 0; pos < ring_order.size(); ++pos)
   {
-    const auto& loop_in = plan.rings[ring_idx];
+    // Finish neighbouring obstacle loops before travelling to another obstacle.
+    // F2C interleaves obstacles on every headland pass; leaving that order intact
+    // creates repeated lawn-crossing connectors inside a single finished path,
+    // where the later sub-path transit optimiser cannot remove them.
+    if (pos >= outer_ring_count && !segs.empty())
+    {
+      const auto& end = segs.back().back();
+      std::size_t best = pos;
+      double best_distance = std::numeric_limits<double>::max();
+      for (std::size_t j = pos; j < ring_order.size(); ++j)
+      {
+        for (const auto& pt : plan.rings[ring_order[j]])
+        {
+          const double d = std::hypot(pt.first - end.first, pt.second - end.second);
+          if (d < best_distance)
+          {
+            best_distance = d;
+            best = j;
+          }
+        }
+      }
+      std::swap(ring_order[pos], ring_order[best]);
+    }
+    const auto& loop_in = plan.rings[ring_order[pos]];
     if (loop_in.size() < 2)
     {
       continue;
@@ -1970,31 +1994,19 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // this) always stay on `boundary` — see the join loop below.
   const std::size_t first_swath_seg_idx = segs.size();
 
-  // Nearest-endpoint chaining of the swath pieces. BoustrophedonOrder's
-  // serpentine interleaves the pieces of a sweep line that a concave bite (or a
-  // hole) split — below,above,below,above… — which forced one field-crossing
-  // blade-on join PER COLUMN through/around the bite (user report: "the plan
-  // lands in the middle at the rounded parts"). Greedy nearest-endpoint chaining
-  // is identical to the plain serpentine on a convex field (the nearest unvisited
-  // piece IS the adjacent swath, entered at the near end), but on a split field
-  // it mows each lobe contiguously and leaves ONE long hop per lobe change —
-  // which the join-gap split below turns into a single blade-off Nav2 transit.
-  // Deterministic for a fixed plan (greedy from a fixed seed). O(n²), n = a few
-  // hundred swaths at most.
+  // Chain swaths by the cost of the connector we can actually drive. Endpoint
+  // distance alone favours tight omega turns and can choose a neighbour across
+  // a hole over a slightly farther swath with a clear turn. Keep the original
+  // Boustrophedon seed for determinism and evaluate both directions thereafter.
+  // Euclidean distance is a lower bound: candidates already farther than the
+  // best connector need no geometry search. No mowing primitive is dropped.
   std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> ordered_swaths;
   {
     const auto& sw_in = plan.swaths;
     std::vector<bool> used(sw_in.size(), false);
-    // Seed from BoustrophedonOrder's OWN first swath, NOT from the last ring's
-    // end. Seeding from the ring end couples the serpentine direction to where
-    // the ring closure happens to sit (the mid-longest-edge rotation above moved
-    // it), and a flipped serpentine relocates every U-turn to the opposite swath
-    // ends — where the turn-around teardrop may no longer fit inside the safety
-    // inset (measured on the recorded garden: 7 extra cusp-splits from bottom-
-    // edge U-turns that no longer had headland room). BoustrophedonOrder's own
-    // start reproduces the field-proven serpentine regardless of ring layout;
-    // the ring→first-swath hop is then joined blade-on when short or bridged by
-    // one Nav2 transit when long.
+    // Keep the first generated swath as the fixed seed, independent of where
+    // the last perimeter loop closes. Subsequent choices use the actual turn
+    // envelope; moving the ring start must not move the sweep's starting row.
     std::pair<double, double> cur =
         !sw_in.empty() ? sw_in.front().first : std::pair<double, double>{0.0, 0.0};
     ordered_swaths.reserve(sw_in.size());
@@ -2009,21 +2021,76 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
         {
           continue;
         }
-        const double d0 =
-            std::hypot(sw_in[i].first.first - cur.first, sw_in[i].first.second - cur.second);
-        const double d1 =
-            std::hypot(sw_in[i].second.first - cur.first, sw_in[i].second.second - cur.second);
-        if (d0 < best_d)
+        for (bool reversed : {false, true})
         {
-          best_d = d0;
-          best = i;
-          flip = false;
-        }
-        if (d1 < best_d)
-        {
-          best_d = d1;
-          best = i;
-          flip = true;
+          const auto& entry = reversed ? sw_in[i].second : sw_in[i].first;
+          const auto& exit = reversed ? sw_in[i].first : sw_in[i].second;
+          const double gap = std::hypot(entry.first - cur.first, entry.second - cur.second);
+          if (gap >= best_d)
+          {
+            continue;
+          }
+          double cost = gap;
+          if (!ordered_swaths.empty())
+          {
+            const auto& previous = ordered_swaths.back();
+            const Pose start{cur.first,
+                             cur.second,
+                             std::atan2(previous.second.second - previous.first.second,
+                                        previous.second.first - previous.first.first)};
+            const Pose goal{entry.first,
+                            entry.second,
+                            std::atan2(exit.second - entry.second, exit.first - entry.first)};
+            const auto& envelope = swath_turn_boundary.size() >= 3 ? swath_turn_boundary : boundary;
+            bool fallback = false;
+            const auto conn = buildConnector(start,
+                                             goal,
+                                             envelope,
+                                             plan.safe_holes,
+                                             turn_radius,
+                                             std::max(0.02, min_turn_radius),
+                                             step,
+                                             fallback);
+            if (!fallback && !conn.empty())
+            {
+              cost = std::hypot(conn.back().first - entry.first, conn.back().second - entry.second);
+              for (std::size_t k = 1; k < conn.size(); ++k)
+              {
+                cost += std::hypot(conn[k].first - conn[k - 1].first,
+                                   conn[k].second - conn[k - 1].second);
+              }
+            }
+            else if (!conn.empty() && allInside(conn, envelope) &&
+                     clearOfHoles(conn, plan.safe_holes) &&
+                     straightFallbackIsContinuous(start, goal))
+            {
+              cost = gap;
+            }
+            else
+            {
+              // A stop/reorientation has a cost even when the endpoints nearly
+              // coincide. Express heading changes as equivalent arc length at
+              // the configured radius; a Nav2 relocation gets a full-circle
+              // penalty. These are ordering heuristics, not transit routes or
+              // execution-time estimates. The join builder still decides safety.
+              const double radius = std::max(0.02, std::max(turn_radius, min_turn_radius));
+              const auto pivot =
+                  planPivotJoin(start, goal, conn, envelope, plan.safe_holes, pivot_limits);
+              const double heading = std::atan2(goal.y - start.y, goal.x - start.x);
+              cost += radius *
+                      (pivot.ok ? (gap < mowgli_interfaces::coverage_geometry::kPivotCornerMaxStepM
+                                       ? headingError(goal.theta, start.theta)
+                                       : headingError(heading, start.theta) +
+                                             headingError(goal.theta, heading))
+                                : 2.0 * M_PI);
+            }
+          }
+          if (cost < best_d)
+          {
+            best_d = cost;
+            best = i;
+            flip = reversed;
+          }
         }
       }
       used[best] = true;
@@ -2072,6 +2139,8 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // to a straight join instead of an untrackable loop.
   const double min_radius = std::max(0.02, min_turn_radius);
 
+  std::size_t ring_subpath_count = 0;
+  bool path_has_ring = false;
   std::vector<std::pair<double, double>> path;  // the sub-path being accumulated
   for (std::size_t i = 0; i < segs.size(); ++i)
   {
@@ -2082,14 +2151,6 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
       // and arrives tangent → no cusp at either junction.
       const Pose start{path.back().first, path.back().second, exitHeading(segs[i - 1])};
       const Pose goal{segs[i].front().first, segs[i].front().second, entryHeading(segs[i])};
-      // A blade-on connector is a TURN-AROUND between adjacent passes (~op_width
-      // apart). A join longer than this is a RELOCATION (lobe change across a
-      // concave bite, innermost-ring → far first swath): an in-bounds Dubins for
-      // it "works" but mows a long diagonal across the middle of the lawn (user
-      // report). Split instead — FollowStrip bridges it with a blade-off Nav2
-      // transit. Single-sourced from mowgli_interfaces so this matches the BT's
-      // FollowStrip::kSegmentTransitGap for the same decision — see
-      // coverage_geometry.hpp for why the two sides must agree.
       // Attempt a blade-on connector for every segment join. A real Dubins
       // connector is tangent at both ends. When no such arc fits, the straight
       // fallback may stay in the same sub-path only if it is also aligned with
@@ -2161,6 +2222,11 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
       if (!conn_safe && !pivot_join.ok)
       {
         subpaths.push_back(std::move(path));
+        if (path_has_ring)
+        {
+          ++ring_subpath_count;
+        }
+        path_has_ring = false;
         path.clear();
       }
     }
@@ -2168,6 +2234,7 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
     // the connector) coincides with segs[i].front(), so skip the first point to
     // avoid a zero-length step; at a fresh sub-path start, take the whole segment.
     const auto& s = segs[i];
+    path_has_ring = path_has_ring || i < first_swath_seg_idx;
     if (path.empty())
     {
       path.insert(path.end(), s.begin(), s.end());
@@ -2180,6 +2247,10 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   if (!path.empty())
   {
     subpaths.push_back(std::move(path));
+    if (path_has_ring)
+    {
+      ++ring_subpath_count;
+    }
   }
 
   // Round ONLY the true cusps — corners that exceed the 90° inversion limit
@@ -2246,11 +2317,12 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // Sub-path DRIVE ORDER: see orderSubPathsForMinimalTransit's doc comment —
   // extracted to its own pure, unit-testable function (mowgli_coverage
   // convention for decision logic like this; see test_coverage_planning.cpp).
-  return orderSubPathsForMinimalTransit(std::move(out));
+  return orderSubPathsForMinimalTransit(std::move(out), ring_subpath_count);
 }
 
 std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTransit(
-    std::vector<std::vector<std::pair<double, double>>> sub_paths)
+    std::vector<std::vector<std::pair<double, double>>> sub_paths,
+    std::size_t preserve_direction_count)
 {
   // Minimize the blade-off Nav2 transit BETWEEN sub-paths. Sub-paths arrive in
   // swath-chain order; on a multi-hole field that leaves the driver
@@ -2283,17 +2355,11 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
   //     covers the reverse-the-other-one case the single-seed version had,
   //     plus every case where the BEST link is to the seed's normally-unused
   //     front end via a different sub-path arriving there first.
-  //   * Sub-path 0's ORIGINAL winding is NEVER reversed, whether or not it
-  //     wins as seed (mowglinext#819 review): buildContinuousSubPaths appends
-  //     rings before swaths, so sub-path 0 is the one most likely to carry
-  //     headland-ring material, and reversing a ring's point order reverses
-  //     its DRIVEN winding — silently inverting the operator's configured
-  //     ring_direction (blade-side clockwise/counter-clockwise, issue #335)
-  //     for a shorter transit link. "The seed is never reversed" alone does
-  //     not protect sub-path 0 when a DIFFERENT sub-path wins as seed and
-  //     pulls sub-path 0 in as an ordinary candidate — this is the one
-  //     exception the seed search may not touch, regardless of which seed is
-  //     best. See RingDirection*Preserved in test_coverage_planning.cpp.
+  //   * All ring-bearing sub-paths retain their ORIGINAL winding. Rings arrive
+  //     before swaths, so the builder supplies the number of ring-bearing paths
+  //     at the start of the input, including a mixed ring/swath path. Protecting
+  //     only sub-path 0 let later obstacle loops silently reverse mow_direction.
+  //     Direct callers keep the historical sub-path-0 protection by default.
   //   * Bounded to kMaxSeedSearchSize sub-paths (O(n^3) — every seed reruns the
   //     O(n^2) chain): a pathological multi-hole field with more lobes than that
   //     falls back to the single-seed=0 search instead, which is still a
@@ -2348,11 +2414,8 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
           best = j;
           best_rev = false;
         }
-        // Sub-path 0 (ORIGINAL index, not the winning seed) is never entered
-        // reversed — see the doc comment above: it is the one sub-path this
-        // function does not own the winding of, so no seed choice may flip
-        // it, no matter how much shorter that link would be.
-        if (j == 0)
+        // Preserve the operator's winding on every path containing a ring.
+        if (j < std::max(std::size_t{1}, preserve_direction_count))
         {
           continue;
         }
