@@ -2917,10 +2917,12 @@ void markKeptVertices(const std::vector<std::pair<double, double>>& pts,
     for (std::size_t i = lo + 1; i < hi; ++i)
     {
       const double px = pts[i].first - ax, py = pts[i].second - ay;
-      // Distance to the chord's LINE; to the anchor itself when the chord has no
-      // length (a closed loop's first and last vertex coincide).
-      const double dist =
-          (len2 < 1e-12) ? std::hypot(px, py) : std::abs(px * dy - py * dx) / std::sqrt(len2);
+      // Distance to the chord SEGMENT, not to its infinite line: a ring that
+      // doubles back on itself must not lose a vertex that is collinear with the
+      // chord yet far beyond its end. A zero-length chord (a closed loop's first
+      // and last vertex coincide) measures to the anchor itself (t stays 0).
+      const double t = (len2 < 1e-12) ? 0.0 : std::clamp((px * dx + py * dy) / len2, 0.0, 1.0);
+      const double dist = std::hypot(px - t * dx, py - t * dy);
       if (dist > worst)
       {
         worst = dist;
