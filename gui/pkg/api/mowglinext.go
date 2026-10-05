@@ -688,6 +688,36 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(200, map[string]interface{}{"message": promoteRes.Message})
 				return
 			}
+		case "set_area_coverage_lines":
+			// Set or clear ONE mowing area's own swath angle and perimeter
+			// winding (opt-in overrides of the robot-wide mow_angle_deg /
+			// mow_direction). Addressed by the stable MapArea.id, never by
+			// index: the map save rebuilds the whole list. It is a plain map edit
+			// that only changes that area's NEXT plan; the Map page only offers
+			// it while the robot is not mowing, because a resume re-plans the
+			// area and its cursor would point into a different plan.
+			var linesReq mowgli.SetAreaCoverageLinesReq
+			if err = c.BindJSON(&linesReq); err != nil {
+				c.JSON(400, ErrorResponse{Error: err.Error()})
+				return
+			}
+			if linesReq.Id == 0 {
+				c.JSON(400, ErrorResponse{Error: "id is required: a new, never-saved area has no id yet"})
+				return
+			}
+			var linesRes mowgli.SetAreaCoverageLinesRes
+			err = provider.CallService(ctx,
+				"/map_server_node/set_area_coverage_lines",
+				&linesReq,
+				&linesRes,
+				"mowgli_interfaces/srv/SetAreaCoverageLines")
+			if err == nil && !linesRes.Success {
+				err = errors.New(linesRes.Message)
+			}
+			if err == nil {
+				c.JSON(200, map[string]interface{}{"message": linesRes.Message})
+				return
+			}
 		case "preview_obstacle_clearance":
 			// Read-only: buffers each obstacle polygon outward by the LIVE
 			// obstacle_margin coverage_server is actually planning with

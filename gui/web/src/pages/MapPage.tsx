@@ -44,6 +44,7 @@ import {DEFAULT_CORRIDOR_WIDTH_M, useLidarCorridors} from "./map/hooks/useLidarC
 import {buildCorridorSideRuns, dropLiveVertex, simplifyPolyline, smoothPolyline, type XY} from "./map/utils/corridorGeometry.ts";
 import {useObstacleClearancePreview} from "./map/hooks/useObstacleClearancePreview.ts";
 import {useCoveragePreview} from "./map/hooks/useCoveragePreview.ts";
+import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {CoveragePreviewPanel} from "./map/components/CoveragePreviewPanel.tsx";
 import {calculateMapViewportBounds} from "./map/utils/mapViewport.ts";
 
@@ -932,10 +933,14 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         datum,
         offsetX,
         offsetY,
-        savedAngleDeg: Number(settings.mow_angle_deg ?? -1),
-        savedDirection: Number(settings.mow_direction ?? 0),
+        globalAngleDeg: Number(settings.mow_angle_deg ?? -1),
+        globalDirection: Number(settings.mow_direction ?? 0),
         preferredAreaId: editMap ? selectedFeatureIds[0] : undefined,
+        // Idle only: an area's lines change its NEXT plan, and a mow in progress
+        // re-plans on resume. Fail closed until the first status frame arrives.
+        canEdit: highLevelStatus.highLevelStatus.state === 1,
     });
+    const coverageResumeAvailable = useCoverageResumeAvailable();
     const coveragePreviewAreaLabel = (index: number, name: string) =>
         name || t('mapAreasList.unnamedArea', {index: index + 1});
 
@@ -1873,7 +1878,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         />
                         {coveragePreview.enabled && (
                             <div style={{borderTop: obstacleProposals.length > 0 ? `1px solid ${colors.borderSubtle}` : undefined}}>
-                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel}/>
+                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel} resumeAvailable={coverageResumeAvailable}/>
                             </div>
                         )}
                     </div>
@@ -1968,7 +1973,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         )}
                         {coveragePreview.enabled && (
                             <div style={{borderTop: `1px solid ${colors.borderSubtle}`}}>
-                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel}/>
+                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel} resumeAvailable={coverageResumeAvailable}/>
                             </div>
                         )}
                         {/* This wrapper must itself be a shrinkable flex participant

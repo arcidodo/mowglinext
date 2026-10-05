@@ -2,8 +2,13 @@ import {describe, expect, it} from "vitest";
 import {
     MAX_SWATH_ARROWS,
     buildPreviewLayers,
+    choicesFromArea,
     effectiveAngleDeg,
+    overridesFromChoices,
+    requestedValues,
     ringToRosPolygon,
+    sameChoices,
+    type AreaChoices,
     type CoveragePreviewResult,
 } from "./coveragePreview.ts";
 import {itranspose} from "../../utils/map.tsx";
@@ -138,5 +143,75 @@ describe("effectiveAngleDeg", () => {
     it("falls back to what the planner resolved for auto", () => {
         expect(effectiveAngleDeg(-1, 72)).toBe(72);
         expect(effectiveAngleDeg(-1, undefined)).toBe(0);
+    });
+});
+
+describe("per-area choices", () => {
+    const follow: AreaChoices = {angleMode: "global", angleDeg: 0, direction: "global"};
+
+    it("an area without overrides follows the robot-wide settings", () => {
+        expect(choicesFromArea(undefined)).toEqual(follow);
+        expect(choicesFromArea({})).toEqual(follow);
+        // A stored number without its flag means nothing.
+        expect(choicesFromArea({mow_angle_deg: 80, ring_direction: 2})).toEqual(follow);
+    });
+
+    it("reads a fixed angle, auto and a winding from the wire form", () => {
+        expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: 35, has_ring_direction: true, ring_direction: 2}))
+            .toEqual({angleMode: "fixed", angleDeg: 35, direction: 2});
+        expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: -1}).angleMode).toBe("auto");
+    });
+
+    it("0 degrees and the planner-default winding are real choices", () => {
+        expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: 0, has_ring_direction: true, ring_direction: 0}))
+            .toEqual({angleMode: "fixed", angleDeg: 0, direction: 0});
+    });
+
+    it("asks the planner for the robot-wide value unless the area overrides it", () => {
+        expect(requestedValues(follow, 40, 1)).toEqual({mow_angle_deg: 40, ring_direction: 1});
+        expect(requestedValues(follow, -1, 0)).toEqual({mow_angle_deg: -1, ring_direction: 0});
+        expect(requestedValues({angleMode: "fixed", angleDeg: 75, direction: 2}, 40, 1))
+            .toEqual({mow_angle_deg: 75, ring_direction: 2});
+        // An area can pin itself to auto even when the robot-wide angle is fixed.
+        expect(requestedValues({angleMode: "auto", angleDeg: 75, direction: "global"}, 40, 0).mow_angle_deg).toBe(-1);
+    });
+
+    it("an unknown robot-wide winding falls back to the planner default", () => {
+        expect(requestedValues(follow, -1, 7).ring_direction).toBe(0);
+    });
+
+    it("writes a flag per value, so global clears an override", () => {
+        expect(overridesFromChoices(follow)).toEqual({
+            has_mow_angle: false, mow_angle_deg: 0, has_ring_direction: false, ring_direction: 0,
+        });
+        expect(overridesFromChoices({angleMode: "fixed", angleDeg: 35, direction: 2})).toEqual({
+            has_mow_angle: true, mow_angle_deg: 35, has_ring_direction: true, ring_direction: 2,
+        });
+        expect(overridesFromChoices({angleMode: "auto", angleDeg: 35, direction: 0})).toEqual({
+            has_mow_angle: true, mow_angle_deg: -1, has_ring_direction: true, ring_direction: 0,
+        });
+    });
+
+    it("round-trips through the wire form", () => {
+        for (const choices of [
+            follow,
+            {angleMode: "fixed", angleDeg: 120, direction: 1},
+            {angleMode: "auto", angleDeg: 0, direction: 0},
+            {angleMode: "fixed", angleDeg: 0, direction: "global"},
+        ] as AreaChoices[]) {
+            expect(sameChoices(choicesFromArea(overridesFromChoices(choices)), choices)).toBe(true);
+        }
+    });
+
+    it("ignores a leftover fixed angle while the mode is not fixed", () => {
+        expect(sameChoices(
+            {angleMode: "global", angleDeg: 10, direction: "global"},
+            {angleMode: "global", angleDeg: 99, direction: "global"},
+        )).toBe(true);
+        expect(sameChoices(
+            {angleMode: "fixed", angleDeg: 10, direction: "global"},
+            {angleMode: "fixed", angleDeg: 11, direction: "global"},
+        )).toBe(false);
+        expect(sameChoices(follow, {...follow, direction: 0})).toBe(false);
     });
 });

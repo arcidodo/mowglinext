@@ -510,8 +510,27 @@ void CoverageServer::planCoverage()
     const LivePlanParams live = readLivePlanParams();
     const double min_swath_length = live.min_swath_length;
     // Perimeter/headland travel winding (#335): 0 = planner default, 1 = CW,
-    // 2 = CCW. Read live so it is field-tunable per plan.
-    const int ring_direction = live.ring_direction;
+    // 2 = CCW. Read live so it is field-tunable per plan. A goal may carry its
+    // own winding for ONE area (the behavior tree sets it from the area's
+    // per-area override); a goal that does not — every goal built before the
+    // field existed — plans with the live parameter, exactly as before. An
+    // unknown value is ignored rather than failing the plan or guessing.
+    int ring_direction = live.ring_direction;
+    if (goal->override_ring_direction)
+    {
+      if (goal->ring_direction >= 0 && goal->ring_direction <= 2)
+      {
+        ring_direction = goal->ring_direction;
+      }
+      else
+      {
+        RCLCPP_WARN(get_logger(),
+                    "plan_coverage: ignoring unknown per-area ring_direction %d, using the "
+                    "live parameter (%d)",
+                    goal->ring_direction,
+                    live.ring_direction);
+      }
+    }
     const double mow_angle_rad =
         (goal->mow_angle_deg < 0.0) ? -1.0 : goal->mow_angle_deg * M_PI / 180.0;
 

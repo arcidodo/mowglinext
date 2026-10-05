@@ -466,6 +466,10 @@ export type MapArea = {
   proposed_obstacles?: Polygon[];
   proposed_obstacle_info?: MapObstacleInfo[];
   id?: number;
+  has_mow_angle?: boolean;
+  mow_angle_deg?: number;
+  has_ring_direction?: boolean;
+  ring_direction?: number;
 };
 
 export const enum MapObstacleInfoConstants {
