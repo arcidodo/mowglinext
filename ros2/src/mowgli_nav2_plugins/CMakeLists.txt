@@ -296,6 +296,9 @@ if(BUILD_TESTING)
   )
   target_link_libraries(test_ftc_turn_fallback_controller ${PROJECT_NAME})
 
+  ament_add_ros_isolated_gtest(test_ftc_speed_limit test/test_ftc_speed_limit.cpp)
+  target_link_libraries(test_ftc_speed_limit ${PROJECT_NAME})
+
   add_executable(lattice_replay test/lattice_replay.cpp)
   target_link_libraries(lattice_replay ${PROJECT_NAME})
 endif()
