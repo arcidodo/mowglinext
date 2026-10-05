@@ -31,6 +31,7 @@
 #include "mowgli_behavior/strip_progress.hpp"
 #include "mowgli_behavior/unit_resume.hpp"
 #include "mowgli_interfaces/coverage_path_invariants.hpp"
+#include "mowgli_interfaces/ftc_abort_reason.hpp"
 #include "tf2/exceptions.hpp"
 
 namespace mowgli_behavior
@@ -488,6 +489,7 @@ BT::NodeStatus FollowStrip::onStart()
     getInput<double>("detour_footprint_radius_m", detour_footprint_radius_m_);
   }
   detours_used_ = 0;
+  last_detour_stuck_point_.reset();
   unit_resumes_without_progress_ = 0;
   // Dig skip zones (dig_skip.hpp). Only digs that happen from NOW on interrupt
   // a goal of ours; the ones already recorded this session just shape what is
@@ -495,6 +497,7 @@ BT::NodeStatus FollowStrip::onStart()
   truncated_at_.reset();
   unit_exhausted_by_dig_ = false;
   unit_transit_already_failed_ = false;
+  unit_transit_known_failed_ = false;
   dig_recovery_active_ = false;
   dig_cancel_sent_ = false;
   dig_events_seen_ = snapshotDigs(ctx).event_count;
@@ -744,10 +747,22 @@ bool FollowStrip::sendFollowGoal(const std::shared_ptr<BTContext>& ctx)
   rclcpp_action::Client<Nav2FollowPath>::SendGoalOptions follow_opts;
   // The coverage goal needs a result callback too — see action_outcome.hpp.
   follow_outcome_->Reset();
+  // issue #743: also capture the result's error_msg (renewed per goal, same
+  // reason as tracking_slot_) so tryStartDetour can check
+  // ftc_abort_reason::HasObstacleAbortMarker instead of relying solely on its
+  // own, differently-modeled costmap re-derivation.
+  follow_result_ = std::make_shared<TransitResultSlot>();
   follow_opts.result_callback =
-      [slot = follow_outcome_](const FollowGoalHandle::WrappedResult& result)
+      [slot = follow_outcome_, msg = follow_result_](const FollowGoalHandle::WrappedResult& r)
   {
-    slot->Record(OutcomeFromResultCode(result.code));
+    slot->Record(OutcomeFromResultCode(r.code));
+    std::lock_guard<std::mutex> lk(msg->mutex);
+    msg->ready = true;
+    if (r.result)
+    {
+      msg->error_code = r.result->error_code;
+      msg->error_msg = r.result->error_msg;
+    }
   };
   follow_opts.feedback_callback =
       [slot = tracking_slot_](FollowGoalHandle::SharedPtr,
@@ -853,6 +868,19 @@ bool FollowStrip::sendCurrentSwath(const std::shared_ptr<BTContext>& ctx)
     if (failed_transit && sameTransitTarget(failed_transit->x, failed_transit->y, start.x, start.y))
     {
       unit_transit_already_failed_ = true;
+      return true;
+    }
+    // issue #732: the guard above only ever catches the very next attempt
+    // after a TransitToStrip failure, and only for the area's first unit. A
+    // LATER inter-unit transit that fails goes through the transit_active_
+    // abort handler instead, which had no equivalent guard at all — see
+    // session_failed_transit_targets's doc comment (bt_context.hpp) for the
+    // field incident this closes. Checked for every dispatch, not just the
+    // first, so a target that failed on an EARLIER dispatch of this area is
+    // also caught.
+    if (isKnownFailedTransit(start.x, start.y, ctx->session_failed_transit_targets))
+    {
+      unit_transit_known_failed_ = true;
       return true;
     }
 
@@ -1195,6 +1223,19 @@ BT::NodeStatus FollowStrip::onRunning()
     ++swaths_skipped_;
     return advance();
   }
+  // issue #732: this transit target already failed on an earlier dispatch of
+  // this area, this session — not repeating it.
+  if (unit_transit_known_failed_)
+  {
+    unit_transit_known_failed_ = false;
+    RCLCPP_WARN(ctx->node->get_logger(),
+                "FollowStrip: segment %zu/%zu — this transit already failed earlier this "
+                "session; not repeating it, moving on (it stays un-mowed for a later pass)",
+                swath_idx_ + 1,
+                swaths_.size());
+    ++swaths_skipped_;
+    return advance();
+  }
 
   // A dig while a goal of ours is active: cancel it, let the bridge finish its
   // bounded reverse, resume the same unit past the hole (dig_skip.hpp).
@@ -1271,6 +1312,7 @@ BT::NodeStatus FollowStrip::onRunning()
     {
       transit_active_ = false;
       nav_handle_.reset();
+      last_detour_stuck_point_.reset();  // the detour this transit was for succeeded
       sendFollowGoal(ctx);
       return BT::NodeStatus::RUNNING;
     }
@@ -1344,9 +1386,33 @@ BT::NodeStatus FollowStrip::onRunning()
                     transitFailureName(outcome->kind),
                     static_cast<unsigned>(outcome->error_code),
                     outcome->error_msg.c_str());
+        // issue #732: remember this target for the rest of the session so a
+        // later dispatch of this area does not repeat the identical failing
+        // transit — see session_failed_transit_targets's doc comment
+        // (bt_context.hpp). NOT recorded for a start-pose-blocked refusal
+        // above: that failure is about the robot's OWN pose, not this target.
+        if (swath_idx_ < swaths_.size())
+        {
+          const auto& target = swaths_[swath_idx_].poses.front().pose.position;
+          ctx->session_failed_transit_targets =
+              recordFailedTransit(ctx->session_failed_transit_targets, {target.x, target.y});
+        }
+        // This transit was a detour's resume-pose leg: ALSO record the FTC
+        // stuck pose it detoured from (last_detour_stuck_point_'s doc comment,
+        // coverage_nodes.hpp) — fixed plan geometry that a fresh dispatch of
+        // this area will hit again, unlike the resume pose above which is
+        // re-derived from the live costmap and can drift past the merge
+        // radius between attempts.
+        if (last_detour_stuck_point_.has_value())
+        {
+          ctx->session_failed_transit_targets =
+              recordFailedTransit(ctx->session_failed_transit_targets,
+                                  {last_detour_stuck_point_->x, last_detour_stuck_point_->y});
+        }
       }
       transit_active_ = false;
       transit_abort_seen_ = false;
+      last_detour_stuck_point_.reset();
       nav_handle_.reset();
       ++swaths_skipped_;
       return advance();
@@ -1612,6 +1678,8 @@ void FollowStrip::abortActiveGoals(const std::shared_ptr<BTContext>& ctx)
   truncated_at_.reset();
   unit_exhausted_by_dig_ = false;
   unit_transit_already_failed_ = false;
+  unit_transit_known_failed_ = false;
+  last_detour_stuck_point_.reset();
   dig_recovery_active_ = false;
   dig_cancel_sent_ = false;
   setBladeEnabled(false);
@@ -1980,9 +2048,42 @@ bool FollowStrip::tryStartDetour(const std::shared_ptr<BTContext>& ctx)
   cfg.footprint_radius_m = detour_footprint_radius_m_;
   cfg.lethal_cost = kDetourLethalCost;
   cfg.wedge_radius_m = kDetourWedgeRadiusM;
+  // issue #743: FTCController's OWN abort classification, independent of the
+  // global-costmap re-derivation below (the two can disagree — see
+  // DetourResumeCfg::ftc_confirmed_obstacle's doc comment).
+  if (follow_result_)
+  {
+    std::lock_guard<std::mutex> lk(follow_result_->mutex);
+    if (follow_result_->ready)
+    {
+      cfg.ftc_confirmed_obstacle =
+          mowgli_interfaces::ftc_abort_reason::HasObstacleAbortMarker(follow_result_->error_msg);
+    }
+  }
 
   const auto& poses = swaths_[swath_idx_].poses;
   const std::size_t stuck = std::min(path_progress_idx_, poses.size() - 1);
+  // A detour's TRANSIT TARGET (the resume pose found below) is re-derived from
+  // the live costmap and can drift past session_failed_transit_targets' merge
+  // radius between dispatch attempts, so it alone does not reliably stop a
+  // real, static obstacle (a hedge) from re-triggering this whole
+  // confirm+search+transit+Nav2-recovery cycle on every fresh dispatch of this
+  // area — field logs show it cycling Nav2's BackUp/Spin recovery for minutes
+  // with zero progress, dispatch attempt after dispatch attempt. The STUCK
+  // pose is fixed plan geometry instead: the same obstacle blocks FTC at
+  // essentially the same point every time. Check it FIRST and skip the whole
+  // dance if a detour from here already failed this session.
+  if (isKnownFailedTransit(poses[stuck].pose.position.x,
+                           poses[stuck].pose.position.y,
+                           ctx->session_failed_transit_targets))
+  {
+    RCLCPP_INFO(ctx->node->get_logger(),
+                "FollowStrip: unit %zu/%zu — a detour from here already failed this session, not "
+                "retrying — skipping",
+                swath_idx_ + 1,
+                swaths_.size());
+    return false;
+  }
   const DetourDecision d = decideDetour(cm, poses, stuck, cfg);
 
   if (!d.obstacle_confirmed)
@@ -2007,11 +2108,17 @@ bool FollowStrip::tryStartDetour(const std::shared_ptr<BTContext>& ctx)
     return false;
   }
   const std::size_t idx = *d.resume_idx;
+  // Captured BEFORE trimUnitAt mutates swaths_[swath_idx_].poses (poses is a
+  // reference into it) — this is what gets recorded into
+  // session_failed_transit_targets if the transit dispatched below ends up
+  // failing (see last_detour_stuck_point_'s doc comment, coverage_nodes.hpp).
+  const geometry_msgs::msg::Point stuck_point = poses[stuck].pose.position;
 
   // Poses [stuck..idx) span the obstacle gap and are left un-mowed this pass
   // (physically unreachable).
   ++detours_used_;
   trimUnitAt(ctx, idx);
+  last_detour_stuck_point_ = stuck_point;
 
   RCLCPP_WARN(ctx->node->get_logger(),
               "FollowStrip: obstacle blocked unit %zu/%zu — DETOUR %zu/%zu: blade-off transit "
