@@ -370,6 +370,43 @@ TEST(CoveragePlanning, SwathsAreSpreadEvenlyAcrossTheCell)
   }
 }
 
+// F2C places floor(extent / op_width) lanes, so a remainder of MORE than half a lane is the
+// common case, not an edge case: a field plan measured extent/op = 10.97 and got 10 lanes,
+// leaving a 0.136 m strip (almost a whole lane) unplanned beside the headland. 1.08 m across /
+// 0.16 m lanes = 6.75: fixed stepping gives 6 lanes whose last centre is 0.20 m from the far
+// edge; spreading them gives 7, both outer lanes within op_width/2 of their edge.
+TEST(CoveragePlanning, SwathsAreSpreadEvenlyWhenTheRemainderIsOverHalfALane)
+{
+  constexpr double kOpWidth = 0.16;
+  constexpr double kHeight = 1.08;
+  const auto plan = planBoustrophedon(makeRectCentered(3.0, kHeight),
+                                      kOpWidth,
+                                      0.18,
+                                      /*passes=*/-1,
+                                      /*chassis_safety_inset=*/kOpWidth / 2.0,
+                                      /*mow_angle_rad=*/0.0,
+                                      0.15);
+  ASSERT_TRUE(plan.rings.empty());
+
+  std::vector<double> lanes;
+  for (const auto& s : plan.swaths)
+  {
+    lanes.push_back(0.5 * (s.first.second + s.second.second));
+  }
+  std::sort(lanes.begin(), lanes.end());
+  ASSERT_GE(lanes.size(), 7u) << "the lanes were stepped, not spread: a strip is left unplanned";
+
+  constexpr double kSlack = 0.01;
+  EXPECT_LE(lanes.front() - (-kHeight / 2.0), kOpWidth / 2.0 + kSlack);
+  EXPECT_LE(kHeight / 2.0 - lanes.back(), kOpWidth / 2.0 + kSlack)
+      << "far-edge strip left unplanned";
+  for (std::size_t i = 1; i < lanes.size(); ++i)
+  {
+    EXPECT_LE(lanes[i] - lanes[i - 1], kOpWidth + 1e-6)
+        << "gap between lanes " << i - 1 << "→" << i;
+  }
+}
+
 // 5x5 m square with a 1.5x1.5 m central hole: no swath may cross the hole —
 // each sweep line is clipped into per-side swaths (F2C v3 makes every disjoint
 // clip its own swath; that property replaces decomposition).

@@ -1074,13 +1074,14 @@ std::optional<double> longestValidSwathAngle(const f2c::types::Swaths& swaths)
 // across the swath direction.
 //
 // BruteForce places the first lane op_width/2 inside one bbox edge and then steps
-// by a fixed op_width, so whatever is left over (up to op_width/2 plus the
-// stepping granularity) piles up as ONE unplanned strip on the far side — a strip
-// too narrow for a whole extra lane, which the robot then never mows. When that
-// remainder is more than kSwathRemainderTolM, use n = ceil(extent / op_width)
-// lanes at extent / n spacing instead: both edges get a lane op_width/2 (or less)
-// from the edge, neighbouring lanes overlap slightly more than planned, and no
-// strip is left. The count is n whatever F2C's own far-edge rule is, and the
+// by a fixed op_width while the lane still FITS: it places floor(extent / op_width)
+// lanes (a lane whose outer edge would pass the far side is not generated at all —
+// measured on a field plan: extent/op = 10.97 gave 10 lanes, not 11). Whatever is
+// left over, anywhere from 0 up to a whole op_width, piles up as ONE unplanned strip
+// on the far side, which the robot then never mows. When that remainder is more than
+// kSwathRemainderTolM, use n = floor(extent / op_width) + 1 lanes at extent / n
+// spacing instead: both edges get a lane op_width/2 (or less) from the edge,
+// neighbouring lanes overlap slightly more than planned, and no strip is left. The
 // result is symmetric in the edge it starts from, so `angle` and `angle + π` give
 // the same lanes. Deterministic for a fixed cell + angle.
 static f2c::types::Swaths generateEvenSwaths(f2c::sg::BruteForce& bf,
@@ -1102,13 +1103,18 @@ static f2c::types::Swaths generateEvenSwaths(f2c::sg::BruteForce& bf,
   const double extent = hi - lo;
   if (op_width > 1e-6 && std::isfinite(extent) && extent > op_width)
   {
-    // Lanes F2C places: centres at 0.5·w, 1.5·w, … while inside the extent.
-    const double lanes = std::ceil(extent / op_width - 0.5);
+    // Lanes F2C places: centres at 0.5·w, 1.5·w, … while the lane's outer edge still
+    // fits inside the extent, i.e. floor(extent / w). The epsilon keeps an extent that
+    // is a whole number of lanes (to float noise) from reading as one lane short.
+    const double lanes = std::floor(extent / op_width + 1e-9);
     const double remainder = extent - lanes * op_width;  // uncovered far-side strip
     if (remainder > kSwathRemainderTolM)
     {
-      const double n = std::ceil(extent / op_width);
-      auto even = bf.generateSwaths(angle, extent / n, cell);
+      const double n = lanes + 1.0;
+      // The spacing is nudged 1e-6 under extent / n so that F2C's own floor(extent /
+      // spacing) cannot round down to n - 1 lanes (extent / (extent / n) can come out as
+      // n - epsilon); the lanes still span the full width to 1e-7 m.
+      auto even = bf.generateSwaths(angle, extent / n * (1.0 - 1e-6), cell);
       if (even.size() > 0)
       {
         return even;
