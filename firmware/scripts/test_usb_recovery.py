@@ -12,6 +12,7 @@ SHIM = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include "mowgli_comms.h"
 #include "cobs.h"
@@ -37,7 +38,6 @@ SHIM = r'''
 #define CDC_SEND_BREAK 8
 #define OTG_FS_IRQn 10
 #define WATCHDOG_SetMainLoopStage(x) ((void)0)
-#define debug_printf(...) ((void)0)
 typedef struct { uint32_t bitrate; uint8_t format, paritytype, datatype; } USBD_CDC_LineCodingTypeDef;
 typedef struct { uint32_t TxState; uint8_t *TxBuffer; uint32_t TxLength; } USBD_CDC_HandleTypeDef;
 typedef struct { void *pClassData; unsigned dev_state; } USBD_HandleTypeDef;
@@ -50,15 +50,23 @@ typedef struct {
 static USBD_CDC_HandleTypeDef klass;
 USBD_HandleTypeDef hUsbDeviceFS = { &klass, USBD_STATE_CONFIGURED };
 static uint32_t tick, primask, ipsr;
-static unsigned irq_enabled=1, stops, starts, submits, clears, aborts;
+static unsigned irq_enabled=1, stops, ll_stops, starts, submits, clears, aborts;
 static unsigned detached_pin;
-static unsigned fail_start, fail_stop;
+static unsigned fail_start, fail_stop, fail_second_stop;
+static unsigned logs;
+static char last_log[200];
 static uint8_t *hardware_buffer;
 static uint32_t hardware_length;
 static uint32_t HAL_GetTick(void) { return tick; }
 static uint32_t __get_PRIMASK(void) { return primask; }
 static void __set_PRIMASK(uint32_t p) { primask=p; }
 static uint32_t __get_IPSR(void) { return ipsr; }
+static void debug_printf(const char *fmt, ...) {
+    assert(!primask && !ipsr && irq_enabled);
+    va_list args; va_start(args,fmt);
+    vsnprintf(last_log,sizeof(last_log),fmt,args); va_end(args);
+    ++logs;
+}
 static void HAL_NVIC_DisableIRQ(int irq) { assert(irq==OTG_FS_IRQn); irq_enabled=0; }
 static void HAL_NVIC_EnableIRQ(int irq) { assert(irq==OTG_FS_IRQn); irq_enabled=1; }
 static void HAL_NVIC_ClearPendingIRQ(int irq) { assert(irq==OTG_FS_IRQn && !irq_enabled); ++clears; }
@@ -77,7 +85,10 @@ static uint8_t USBD_CDC_TransmitPacket(USBD_HandleTypeDef *d) {
 static uint8_t USBD_Stop(USBD_HandleTypeDef *d);
 static uint8_t USBD_Start(USBD_HandleTypeDef *d);
 static uint8_t USBD_LL_Stop(USBD_HandleTypeDef *d) {
-    (void)d; assert(!irq_enabled && !primask); return fail_stop ? USBD_FAIL : USBD_OK;
+    (void)d; assert(!irq_enabled && !primask && !ipsr); ++ll_stops;
+    if (fail_stop || (fail_second_stop && hardware_buffer==NULL)) { return USBD_FAIL; }
+    ++aborts; hardware_buffer=NULL; hardware_length=0;
+    return USBD_OK;
 }
 typedef struct { unsigned Pin, Mode, Pull, Speed, Alternate; } GPIO_InitTypeDef;
 #define GPIOA 1
@@ -115,13 +126,16 @@ static unsigned commands;
 static void command(const uint8_t *b, size_t n) { assert(b[0]==PKT_ID_CMD_VEL && n==sizeof(pkt_cmd_vel_t)-2); ++commands; }
 static uint8_t USBD_Stop(USBD_HandleTypeDef *d) {
     assert(!primask && !ipsr && !irq_enabled);
-    ++stops; ++aborts; hardware_buffer=NULL; hardware_length=0;
+    // Cube's single-class USBD_Stop ignores a SECOND LL_Stop result, then
+    // deinitializes/frees CDC regardless. Keep that ownership boundary real.
+    ++stops; (void)USBD_LL_Stop(d);
+    assert(hardware_buffer==NULL && hardware_length==0);
     CDC_DeInit(); d->pClassData=NULL; klass.TxState=0;
     return USBD_OK;
 }
 static uint8_t USBD_Start(USBD_HandleTypeDef *d) {
     (void)d; assert(!primask && !ipsr && !irq_enabled && !detached_pin && (usb_regs.GCCFG&USB_OTG_GCCFG_PWRDWN)); ++starts;
-    if (fail_start) { fail_start=0; return USBD_FAIL; }
+    if (fail_start) { --fail_start; return USBD_FAIL; }
     return USBD_OK;
 }
 static void receive(void) {
@@ -141,6 +155,7 @@ int main(void) {
     const uint8_t old[]={1,2,3}, fresh[]={9,8,7,6};
     mowgli_comms_init(); mowgli_comms_register_handler(PKT_ID_CMD_VEL,command);
     tick=100; configure(); receive();
+    CDC_ServiceRecovery(); assert(!CDC_GetUsbRecoveryCount() && !logs);
     assert(CDC_TransmitString("")==USBD_OK);
     assert(CDC_Transmit(old,sizeof(old))==USBD_OK);
     pkt_cmd_vel_t cmd={0}; cmd.type=PKT_ID_CMD_VEL;
@@ -166,10 +181,15 @@ int main(void) {
     CDC_Receive(encoded,&encoded_size);
     assert(!commands && s_rx_write==encoded_len); // pending RX was rejected
     fail_stop=1; CDC_ServiceRecovery();
-    assert(!stops && irq_enabled && klass.TxState && s_rx_write==encoded_len);
+    assert(ll_stops==1 && !stops && !aborts && irq_enabled && klass.TxState && s_rx_write==encoded_len);
+    assert(hardware_buffer && !CDC_GetUsbRecoveryCount() && !logs);
+    // Repeated stop failures neither free ownership nor spam diagnostics.
+    for (unsigned i=0;i<100;++i) { CDC_ServiceRecovery(); }
+    assert(ll_stops==101 && !stops && !aborts && hardware_buffer && !logs);
     fail_stop=0;
     CDC_ServiceRecovery();
-    assert(stops==1 && aborts==1 && !irq_enabled && !CDC_TXQueue_GetReadAvailable());
+    assert(ll_stops==103 && stops==1 && aborts==2 && !irq_enabled && !CDC_TXQueue_GetReadAvailable());
+    assert(!CDC_GetUsbRecoveryCount() && !logs);
     assert(detached_pin);
     assert(hUsbDeviceFS.dev_state==USBD_STATE_DEFAULT && !CDC_ShouldSendTelemetry());
     assert(s_rx_write==0); // Stop itself discarded pre-detach command assembly
@@ -184,11 +204,17 @@ int main(void) {
     CDC_ServiceRecovery(); assert(stops==1 && starts==1);
     CDC_NotifyUsbReset(); receive(); assert(s_txRecoveryHold);
     configure(); assert(!s_txRecoveryHold && CDC_ShouldSendTelemetry());
+    assert(CDC_GetUsbRecoveryCount()==1 && !logs); // no printing from Init IRQ
+    configure(); assert(CDC_GetUsbRecoveryCount()==1); // ordinary configuration excluded
     uint8_t delim=0; uint32_t delim_len=1;
     CDC_Receive(&delim,&delim_len); assert(!commands); // old command cannot revive
     CDC_Receive(encoded,&encoded_size); CDC_Receive(&delim,&delim_len);
     assert(commands==1); // handlers survive; fresh commands still decode
-    tick=900; receive(); CDC_Transmit(fresh,sizeof(fresh));
+    tick=900; receive(); CDC_ServiceRecovery();
+    assert(logs==1 && strstr(last_log,"USB recoveries=1 busy_stuck=1 missing_completion=1 tick=900"));
+    for (unsigned i=0;i<100;++i) { CDC_ServiceRecovery(); }
+    assert(logs==1); // unchanged counters do not repeat
+    CDC_Transmit(fresh,sizeof(fresh));
     assert(hardware_length==sizeof(fresh) && !memcmp(hardware_buffer,fresh,sizeof(fresh)));
     complete(); assert(!CDC_TXQueue_GetReadAvailable());
 
@@ -200,23 +226,60 @@ int main(void) {
     receive(); CDC_Transmit(old,sizeof(old)); CDC_ServiceRecovery();
     assert(stops==2); // renewed OUT permits safe recovery of that same transfer
     tick=6751; CDC_ServiceRecovery(); configure(); receive();
+    assert(CDC_GetUsbRecoveryCount()==2 && logs==1);
     CDC_Transmit(fresh,sizeof(fresh));
     tick=7252; receive(); CDC_Transmit(old,sizeof(old)); CDC_ServiceRecovery();
     assert(stops==2 && klass.TxState); // cooldown bounds repeated failures
-    tick=11502; receive(); CDC_Transmit(old,sizeof(old)); CDC_ServiceRecovery();
+    // If Cube's redundant stop fails, the checked first call has already
+    // quiesced hardware; freeing CDC remains safe and retry can proceed.
+    tick=11502; receive(); CDC_Transmit(old,sizeof(old));
+    unsigned prior_ll_stops=ll_stops, prior_aborts=aborts;
+    fail_second_stop=1; CDC_ServiceRecovery(); fail_second_stop=0;
     assert(stops==3);
+    assert(ll_stops==prior_ll_stops+2 && aborts==prior_aborts+1);
+    assert(!hardware_buffer && !hUsbDeviceFS.pClassData && s_txRecoveryHold);
 
-    tick=11752; fail_start=1; CDC_ServiceRecovery();
+    tick=11752; fail_start=2; CDC_ServiceRecovery();
     assert(s_usbRecoveryState==CDC_USB_DETACHED && detached_pin && !irq_enabled);
+    assert(CDC_GetUsbRecoveryCount()==2 && logs==1);
+    receive(); CDC_TransmitCplt((uint8_t*)old,&n,1);
+    CDC_Receive(encoded,&encoded_size);
+    assert(s_txRecoveryHold && s_rx_write==0 && commands==1);
     unsigned attempts=starts;
     tick=12001; CDC_ServiceRecovery(); assert(starts==attempts);
-    tick=12002; CDC_ServiceRecovery(); assert(starts==attempts+1 && irq_enabled && s_txRecoveryHold);
+    tick=12002; CDC_ServiceRecovery();
+    assert(starts==attempts+1 && !irq_enabled && detached_pin && s_txRecoveryHold);
+    for (unsigned i=0;i<100;++i) { CDC_ServiceRecovery(); }
+    assert(starts==attempts+1 && CDC_GetUsbRecoveryCount()==2 && logs==1);
+    tick=12251; CDC_ServiceRecovery(); assert(starts==attempts+1);
+    tick=12252; CDC_ServiceRecovery(); assert(starts==attempts+2 && irq_enabled && s_txRecoveryHold);
+    // Start alone is not a successful recovery, and enumeration still fences
+    // callbacks/commands until Init creates the new CDC session.
+    receive(); CDC_TransmitCplt((uint8_t*)old,&n,1);
+    CDC_Receive(encoded,&encoded_size);
+    assert(CDC_GetUsbRecoveryCount()==2 && commands==1 && s_rx_write==0 && s_txRecoveryHold);
+    configure(); assert(CDC_GetUsbRecoveryCount()==3 && !s_txRecoveryHold);
+    CDC_Receive(&delim,&delim_len); assert(commands==1);
+    CDC_Receive(encoded,&encoded_size); CDC_Receive(&delim,&delim_len);
+    assert(commands==2);
+    receive(); CDC_Transmit(fresh,sizeof(fresh));
+    assert(hardware_length==sizeof(fresh) && !memcmp(hardware_buffer,fresh,sizeof(fresh)));
+    complete(); assert(!CDC_TXQueue_GetReadAvailable());
+    tick=30899; CDC_ServiceRecovery(); assert(logs==1);
+    tick=30900; CDC_ServiceRecovery();
+    assert(logs==2 && strstr(last_log,"USB recoveries=3 ")); // aggregate suppressed events
+
+    // Diagnostic throttling, like detach timing, is wrap-safe.
+    s_usbRecoveryLogTick=UINT32_MAX-100;
+    s_usbRecoveryLoggedCount=2;
+    tick=29898; CDC_ServiceRecovery(); assert(logs==2);
+    tick=29899; CDC_ServiceRecovery(); assert(logs==3);
 
     // Tick wrap still honours the detach interval.
     tick=UINT32_MAX-100; s_usbDetachTick=tick; s_usbRecoveryState=CDC_USB_DETACHED;
     irq_enabled=0; attempts=starts; tick=148; CDC_ServiceRecovery(); assert(starts==attempts);
     tick=149; CDC_ServiceRecovery(); assert(starts==attempts+1);
-    puts("PASS: production USB timeout quiesces before reuse; asynchronous re-enumeration, callback fencing, host liveness, cooldown and tick wrap");
+    puts("PASS: checked/vendor double-stop ownership, stop/start faults, stale callbacks/commands, reconnect TX/RX, cooldown and throttled recovery diagnostics");
 }
 '''
 

@@ -189,6 +189,8 @@ uint32_t CDC_GetTxCompleteMissingCount(void);
 uint32_t CDC_GetHostClosedSkipCount(void);
 uint32_t CDC_GetUsbResetSeenCount(void);
 uint32_t CDC_GetUsbSuspendSeenCount(void);
+/* Successful automatic re-enumerations since MCU boot; host resets excluded. */
+uint32_t CDC_GetUsbRecoveryCount(void);
 
 /**
  * @brief  CDC_TransmitString

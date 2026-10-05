@@ -81,6 +81,7 @@
 #define CDC_TELEMETRY_PROBE_MS 1000u
 #define CDC_USB_DETACH_MS 250u
 #define CDC_USB_RECOVERY_COOLDOWN_MS 5000u
+#define CDC_USB_RECOVERY_LOG_MS 30000u
 /* USER CODE END PRIVATE_DEFINES */
 
 /**
@@ -133,6 +134,7 @@ static uint32_t s_txCompleteMissingCount = 0;
 static uint32_t s_hostClosedSkipCount = 0;
 static uint32_t s_usbResetSeenCount = 0;
 static uint32_t s_usbSuspendSeenCount = 0;
+static volatile uint32_t s_usbRecoveryCount = 0;
 static uint32_t s_telemetryProbeUntil = 0;
 static uint8_t s_usbSuspended = 0;
 static uint8_t s_txPacketArmed = 0;
@@ -149,6 +151,9 @@ static uint32_t s_usbDetachTick = 0;
 static uint32_t s_lastUsbRecoveryTick = 0;
 static uint8_t s_hasReceived = 0;
 static uint8_t s_hasUsbRecovered = 0;
+static uint32_t s_usbRecoveryLoggedCount = 0;
+static uint32_t s_usbRecoveryLogTick = 0;
+static uint8_t s_hasUsbRecoveryLog = 0;
 #endif
 
 #ifdef USE_USB_FS
@@ -296,6 +301,9 @@ static int8_t CDC_Init(void)
 #if BOARD_YARDFORCE500_VARIANT_B
     /* A fresh host configuration is the only completion boundary for recovery.
      * The old endpoints have been closed; discard partial pre-reset frames. */
+    if (s_usbRecoveryState == CDC_USB_ENUMERATING) {
+        ++s_usbRecoveryCount;
+    }
     s_usbRecoveryState = CDC_USB_RUNNING;
     s_txtail = s_txhead;
     s_rxtail = s_rxhead;
@@ -683,7 +691,11 @@ void CDC_ServiceRecovery(void)
             return;
         }
         /* USBD_Stop hides LL_Stop errors and still frees the class. Check the
-         * low-level stop before allowing that ownership boundary. */
+         * low-level stop before allowing that ownership boundary. Its second
+         * LL_Stop is deliberate: F4 HAL_PCD_Stop repeats disable/disconnect/
+         * FIFO flush, then unlocks. With USB IRQ masked and TX held, nothing
+         * can rearm between calls; even a second-call error cannot undo the
+         * first successful quiesce. Retain vendor class cleanup afterwards. */
         if (USBD_LL_Stop(&hUsbDevice) != USBD_OK) {
             HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
             return;
@@ -716,6 +728,20 @@ void CDC_ServiceRecovery(void)
         }
         HAL_NVIC_EnableIRQ(OTG_FS_IRQn);
         /* Do not clear the hold until CDC_Init during host enumeration. */
+    }
+    /* Never log from CDC_Init (USB IRQ), or while stop/start is retrying.
+     * Aggregate repeated successful recoveries, independent of fault-loop
+     * frequency. Existing SWO/UART debug output is strictly best-effort. */
+    const uint32_t count = s_usbRecoveryCount;
+    const uint32_t now = HAL_GetTick();
+    if (s_usbRecoveryState == CDC_USB_RUNNING && count != s_usbRecoveryLoggedCount &&
+        (s_hasUsbRecoveryLog == 0u || now - s_usbRecoveryLogTick >= CDC_USB_RECOVERY_LOG_MS)) {
+        s_usbRecoveryLoggedCount = count;
+        s_usbRecoveryLogTick = now;
+        s_hasUsbRecoveryLog = 1u;
+        debug_printf("[FW_DIAG] USB recoveries=%lu busy_stuck=%lu missing_completion=%lu tick=%lu\r\n",
+                     (unsigned long)count, (unsigned long)s_txBusyStuckCount,
+                     (unsigned long)s_txCompleteMissingCount, (unsigned long)now);
     }
 #endif
 }
@@ -1159,6 +1185,11 @@ uint32_t CDC_GetUsbResetSeenCount(void)
 uint32_t CDC_GetUsbSuspendSeenCount(void)
 {
     return s_usbSuspendSeenCount;
+}
+
+uint32_t CDC_GetUsbRecoveryCount(void)
+{
+    return s_usbRecoveryCount;
 }
 
 /**
