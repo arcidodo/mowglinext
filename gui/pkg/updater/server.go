@@ -195,6 +195,8 @@ func Serve(config HostConfig) error {
 		}
 	}
 	m.Recover()
+	// No-op while the recovery above runs; that job prunes when it finishes.
+	m.Prune()
 	go func() {
 		tick := time.NewTicker(15 * time.Second)
 		defer tick.Stop()

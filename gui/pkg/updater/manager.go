@@ -533,6 +533,8 @@ func (m *Manager) run(recovery bool) {
 		}
 		defer unlock()
 	}
+	// Registered after the lock so it runs while the deployment is still held.
+	defer m.pruneAfterJob()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
 	defer cancel()
 	j := *m.Snapshot().Job
