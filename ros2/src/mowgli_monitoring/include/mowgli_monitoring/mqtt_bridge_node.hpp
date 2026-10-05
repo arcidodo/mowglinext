@@ -389,6 +389,9 @@ public:
   {
     uint32_t index{0};
     std::string name{};
+    /// Stable MapArea.id (mowglinext#637). Unlike `index` it survives edits to other
+    /// areas; schedules reference an area by it. 0 = not assigned.
+    uint32_t id{0};
   };
 
   static std::string serialise_home_assistant_discovery(const std::string& topic_prefix,
