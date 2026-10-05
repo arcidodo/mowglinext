@@ -836,6 +836,7 @@
     "headlineUntilHomeSuffix": " avant la maison.",
     "headlineChargingPrefix": "En charge · ",
     "headlineMowingPausedPrefix": "Tonte en pause · ",
+    "headlineResumingMowing": "Reprise de la tonte…",
     "headlinePercent": "{{value}} %",
     "emergencyStop": "Arrêt d'urgence",
     "headlineIdlePrefix": "Mowgli est ",
@@ -851,7 +852,8 @@
     "sublineScanPaused": "Le scan LiDAR est temporairement obsolète. Les lames sont arrêtées ; la tonte reprend automatiquement dès le retour de scans frais.",
     "activeZone": "zone active",
     "sublineCharging": "Sur la dock, {{current}} A en entrée.",
-    "sublineChargeHold": "La tonte est en pause et reprendra automatiquement à {{full}}%. Reprise manuelle possible à partir de {{manual}}%.",
+    "sublineChargeHold": "La tonte reprend automatiquement une fois la charge terminée.",
+    "sublineResumingMowing": "La tondeuse quitte la base pour continuer la tonte.",
     "sublineManualChargeHold": "La tonte est en pause car la tondeuse a été posée manuellement sur la base. Retirez-la de la base avant de reprendre.",
     "sublineEmergency": "Sécurise la zone puis relance avec le bouton vert.",
     "sublineIdle": "Tape Play pour démarrer une tonte ou laisse le planning gérer.",
@@ -1431,10 +1433,7 @@
     "rearm": "Réarmer",
     "resumeNow": "Reprendre maintenant",
     "cancelMowing": "Annuler la tonte",
-    "lowChargeHold": "La tonte est en pause pendant la charge.",
-    "manualChargeHold": "La tonte est en pause car la tondeuse a été posée manuellement sur la base.",
-    "criticalChargeHold": "La tonte est en pause pour charger une batterie critique.",
-    "chargeHold": "{{message}} Reprise automatique à {{full}}%. Reprise possible à partir de {{resumeAt}}%."
+    "resumeAvailable": "Disponible à partir de {{percent}}%"
   },
   "modeSegment": {
     "ecoLabel": "Eco",

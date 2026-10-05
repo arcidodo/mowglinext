@@ -836,6 +836,7 @@
     "headlineUntilHomeSuffix": " until home.",
     "headlineChargingPrefix": "Charging · ",
     "headlineMowingPausedPrefix": "Mowing paused · ",
+    "headlineResumingMowing": "Resuming mowing…",
     "headlinePercent": "{{value}} %",
     "emergencyStop": "Emergency stop",
     "headlineIdlePrefix": "Mowgli is ",
@@ -851,7 +852,8 @@
     "sublineScanPaused": "LiDAR scan is temporarily stale. Blades are off; mowing resumes automatically when fresh scans return.",
     "activeZone": "active zone",
     "sublineCharging": "On the dock, {{current}} A coming in.",
-    "sublineChargeHold": "Mowing is paused and resumes automatically at {{full}}%. Resume now is available from {{manual}}%.",
+    "sublineChargeHold": "Resumes automatically when charging is complete.",
+    "sublineResumingMowing": "Leaving the dock to continue the mowing session.",
     "sublineManualChargeHold": "Mowing is paused because the mower was docked manually. Take it off the dock before resuming.",
     "sublineEmergency": "Secure the area, then restart with the green button.",
     "sublineIdle": "Tap Play to start a mow, or let the schedule take over.",
@@ -1435,10 +1437,7 @@
     "rearm": "Re-arm",
     "resumeNow": "Resume now",
     "cancelMowing": "Cancel mowing",
-    "lowChargeHold": "Mowing is paused while the battery charges.",
-    "manualChargeHold": "Mowing is paused because the mower was docked manually.",
-    "criticalChargeHold": "Mowing is paused for critical-battery charging.",
-    "chargeHold": "{{message}} It resumes automatically at {{full}}%. Resume is available at {{resumeAt}}%."
+    "resumeAvailable": "Available from {{percent}}%"
   },
   "modeSegment": {
     "ecoLabel": "Eco",
