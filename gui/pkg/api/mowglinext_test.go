@@ -619,3 +619,63 @@ func TestServiceRoute_PreviewCoverage(t *testing.T) {
 		assert.Equal(t, 400, w.Code)
 	})
 }
+
+func TestServiceRoute_SetAreaCoverageLines(t *testing.T) {
+	call := func(mock *types.MockRosProvider, body map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/mowglinext/call/set_area_coverage_lines", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		setupMowgliNextRouter(mock).ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("passes the id and both overrides to map_server", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		var got mowgli.SetAreaCoverageLinesReq
+		mock.ServiceResponder = func(service string, req any, res any) {
+			assert.Equal(t, "/map_server_node/set_area_coverage_lines", service)
+			got = *req.(*mowgli.SetAreaCoverageLinesReq)
+			*res.(*mowgli.SetAreaCoverageLinesRes) = mowgli.SetAreaCoverageLinesRes{Success: true}
+		}
+		w := call(mock, map[string]any{"id": 7, "has_mow_angle": true, "mow_angle_deg": 35.5, "has_ring_direction": true, "ring_direction": 2})
+		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, uint32(7), got.Id)
+		assert.True(t, got.HasMowAngle)
+		assert.Equal(t, 35.5, got.MowAngleDeg)
+		assert.True(t, got.HasRingDirection)
+		assert.Equal(t, uint8(2), got.RingDirection)
+	})
+
+	t.Run("omitted flags clear the overrides rather than setting zero", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		var got mowgli.SetAreaCoverageLinesReq
+		mock.ServiceResponder = func(service string, req any, res any) {
+			got = *req.(*mowgli.SetAreaCoverageLinesReq)
+			*res.(*mowgli.SetAreaCoverageLinesRes) = mowgli.SetAreaCoverageLinesRes{Success: true}
+		}
+		w := call(mock, map[string]any{"id": 7})
+		assert.Equal(t, 200, w.Code)
+		assert.False(t, got.HasMowAngle)
+		assert.False(t, got.HasRingDirection)
+	})
+
+	t.Run("a zero id is rejected before ROS", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceResponder = func(service string, req any, res any) {
+			t.Fatal("must not reach the service")
+		}
+		assert.Equal(t, 400, call(mock, map[string]any{"has_mow_angle": true, "mow_angle_deg": 10}).Code)
+		assert.Equal(t, 400, call(mock, map[string]any{"id": 0}).Code)
+	})
+
+	t.Run("a map_server refusal is surfaced with its reason", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceResponder = func(service string, req any, res any) {
+			*res.(*mowgli.SetAreaCoverageLinesRes) = mowgli.SetAreaCoverageLinesRes{Success: false, Message: "no area with id 9"}
+		}
+		w := call(mock, map[string]any{"id": 9})
+		assert.NotEqual(t, 200, w.Code)
+		assert.Contains(t, w.Body.String(), "no area with id 9")
+	})
+}

@@ -251,6 +251,21 @@ type PromoteObstacleRes struct {
 	Message                   string                         `json:"message"`
 }
 
+// SetAreaCoverageLinesReq for mowgli_interfaces/srv/SetAreaCoverageLines request.
+type SetAreaCoverageLinesReq struct {
+	Id                        uint32                         `json:"id"`
+	HasMowAngle               bool                           `json:"has_mow_angle"`
+	MowAngleDeg               float64                        `json:"mow_angle_deg"`
+	HasRingDirection          bool                           `json:"has_ring_direction"`
+	RingDirection             uint8                          `json:"ring_direction"`
+}
+
+// SetAreaCoverageLinesRes for mowgli_interfaces/srv/SetAreaCoverageLines response.
+type SetAreaCoverageLinesRes struct {
+	Success                   bool                           `json:"success"`
+	Message                   string                         `json:"message"`
+}
+
 // SetDockingPointReq for mowgli_interfaces/srv/SetDockingPoint request.
 type SetDockingPointReq struct {
 	DockingPose               geometry.Pose                  `json:"docking_pose"`

@@ -23,6 +23,7 @@
 #include <limits>
 
 #include "action_msgs/msg/goal_status.hpp"
+#include "mowgli_behavior/area_coverage_lines.hpp"
 #include "mowgli_behavior/cancel_goal.hpp"
 #include "mowgli_behavior/coverage_persistence.hpp"
 #include "mowgli_behavior/coverage_preview.hpp"
@@ -3217,9 +3218,16 @@ PlanCoverageArea::PlanCoverage::Goal PlanCoverageArea::buildGoal(
   // from the blackboard here, falling back to AUTO if unset. The rest of the
   // coverage geometry (operation_width, headland, insets) lives in the
   // coverage server's parameters, injected at launch from mowgli_robot.yaml.
+  //
+  // An area may override both the angle and the perimeter winding (set from the
+  // Map page's "mowing lines" preview): an area that overrides nothing is
+  // planned exactly as before — see area_coverage_lines.hpp.
   double mow_angle_deg = kMowAngleAutoDeg;
   (void)config().blackboard->get<double>("mow_angle_deg", mow_angle_deg);
-  goal.mow_angle_deg = mow_angle_deg;
+  const CoverageLineChoice lines = ResolveCoverageLines(area, mow_angle_deg);
+  goal.mow_angle_deg = lines.mow_angle_deg;
+  goal.override_ring_direction = lines.override_ring_direction;
+  goal.ring_direction = lines.ring_direction;
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
   uint32_t area_index = 0;
   getInput<uint32_t>("area_index", area_index);

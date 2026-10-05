@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <fstream>
+#include <iterator>
 #include <memory>
 #include <string>
 #include <utility>
@@ -37,6 +38,7 @@
 #include <mowgli_interfaces/srv/clear_obstacle.hpp>
 #include <mowgli_interfaces/srv/get_mowing_area.hpp>
 #include <mowgli_interfaces/srv/promote_obstacle.hpp>
+#include <mowgli_interfaces/srv/set_area_coverage_lines.hpp>
 #include <mowgli_interfaces/srv/set_docking_point.hpp>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -593,6 +595,308 @@ TEST_F(AreaTypeTest, LegacyAreasFileWithoutIdsGetsIdsAssignedAndReSaved)
   EXPECT_EQ(res0->area.id, id0) << "areas.dat was not actually re-saved with the assigned id";
 
   std::remove(tmp_path.c_str());
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-area coverage lines: optional overrides of the robot-wide mow angle and
+// perimeter winding. Opt-in (a flag per value), persisted only when set.
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace
+{
+
+std::string coverage_lines_tmp(const std::string& name)
+{
+  return std::string(std::getenv("TEST_TMPDIR") ? std::getenv("TEST_TMPDIR") : "/tmp") + "/" + name;
+}
+
+std::string read_whole_file(const std::string& path)
+{
+  std::ifstream in(path);
+  return std::string((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+}
+
+}  // namespace
+
+class AreaCoverageLinesTest : public AreaTypeTest
+{
+protected:
+  bool add_with_lines(const std::string& name,
+                      const geometry_msgs::msg::Polygon& poly,
+                      bool has_angle,
+                      double angle,
+                      bool has_direction,
+                      uint8_t direction,
+                      bool is_navigation = false)
+  {
+    auto req = std::make_shared<mowgli_interfaces::srv::AddMowingArea::Request>();
+    req->area.name = name;
+    req->area.area = poly;
+    req->is_navigation_area = is_navigation;
+    req->area.has_mow_angle = has_angle;
+    req->area.mow_angle_deg = angle;
+    req->area.has_ring_direction = has_direction;
+    req->area.ring_direction = direction;
+    auto res = std::make_shared<mowgli_interfaces::srv::AddMowingArea::Response>();
+    node_->add_area_for_test(req, res);
+    return res->success;
+  }
+
+  mowgli_interfaces::srv::SetAreaCoverageLines::Response::SharedPtr set_lines(
+      uint32_t id, bool has_angle, double angle, bool has_direction, uint8_t direction)
+  {
+    auto req = std::make_shared<mowgli_interfaces::srv::SetAreaCoverageLines::Request>();
+    req->id = id;
+    req->has_mow_angle = has_angle;
+    req->mow_angle_deg = angle;
+    req->has_ring_direction = has_direction;
+    req->ring_direction = direction;
+    auto res = std::make_shared<mowgli_interfaces::srv::SetAreaCoverageLines::Response>();
+    node_->set_area_coverage_lines_for_test(req, res);
+    return res;
+  }
+
+  // A fresh node, as after a container restart, loaded from `path`.
+  std::shared_ptr<mowgli_map::MapServerNode> reload(const std::string& path)
+  {
+    rclcpp::NodeOptions opts;
+    opts.append_parameter_override("resolution", 0.1);
+    opts.append_parameter_override("map_size_x", 10.0);
+    opts.append_parameter_override("map_size_y", 10.0);
+    opts.append_parameter_override("map_frame", "map");
+    opts.append_parameter_override("tool_width", 0.2);
+    opts.append_parameter_override("map_file_path", "");
+    opts.append_parameter_override("areas_file_path", "");
+    opts.append_parameter_override("publish_rate", 1.0);
+    auto node = std::make_shared<mowgli_map::MapServerNode>(opts);
+    node->load_areas_for_test(path);
+    return node;
+  }
+
+  static mowgli_interfaces::srv::GetMowingArea::Response::SharedPtr get_from(
+      const std::shared_ptr<mowgli_map::MapServerNode>& node, uint32_t index)
+  {
+    auto req = std::make_shared<mowgli_interfaces::srv::GetMowingArea::Request>();
+    req->index = index;
+    auto res = std::make_shared<mowgli_interfaces::srv::GetMowingArea::Response>();
+    node->get_mowing_area_for_test(req, res);
+    return res;
+  }
+};
+
+TEST_F(AreaCoverageLinesTest, AnAreaFollowsTheRobotWideSettingsByDefault)
+{
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  const auto res = get_area(0);
+  EXPECT_FALSE(res->area.has_mow_angle);
+  EXPECT_FALSE(res->area.has_ring_direction);
+}
+
+TEST_F(AreaCoverageLinesTest, OverridesRideThroughAddAreaForTheGuisRebuildFlow)
+{
+  // clear_map + add_area per area is how every GUI map save works, so an area
+  // the operator did not touch must come back with its angle and winding.
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-2, -2, 2, 2), true, 35.0, true, 2));
+  const auto res = get_area(0);
+  EXPECT_TRUE(res->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(res->area.mow_angle_deg, 35.0);
+  EXPECT_TRUE(res->area.has_ring_direction);
+  EXPECT_EQ(res->area.ring_direction, 2);
+}
+
+TEST_F(AreaCoverageLinesTest, ZeroDegreesIsARealOverrideNotTheAbsenceOfOne)
+{
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-2, -2, 2, 2), true, 0.0, true, 0));
+  const auto res = get_area(0);
+  EXPECT_TRUE(res->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(res->area.mow_angle_deg, 0.0);
+  EXPECT_TRUE(res->area.has_ring_direction);
+  EXPECT_EQ(res->area.ring_direction, 0);
+}
+
+TEST_F(AreaCoverageLinesTest, AnInvalidOverrideIsDroppedAndTheAreaStillLoads)
+{
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-2, -2, 2, 2), true, 20.0, true, 9));
+  const auto res = get_area(0);
+  EXPECT_FALSE(res->area.has_mow_angle) << "one bad value must not half-apply the pair";
+  EXPECT_FALSE(res->area.has_ring_direction);
+}
+
+TEST_F(AreaCoverageLinesTest, SurviveASaveAndAFreshLoad)
+{
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-3, -3, 0, 0), true, 35.0, true, 1));
+  ASSERT_TRUE(add_area("plain", make_rect(0, 0, 3, 3), /*is_navigation=*/false));
+  const auto path = coverage_lines_tmp("mowgli_areas_coverage_lines.dat");
+  node_->save_areas_for_test(path);
+
+  const auto fresh = reload(path);
+  const auto lawn = get_from(fresh, 0);
+  EXPECT_TRUE(lawn->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(lawn->area.mow_angle_deg, 35.0);
+  EXPECT_TRUE(lawn->area.has_ring_direction);
+  EXPECT_EQ(lawn->area.ring_direction, 1);
+  const auto plain = get_from(fresh, 1);
+  EXPECT_FALSE(plain->area.has_mow_angle);
+  EXPECT_FALSE(plain->area.has_ring_direction);
+  std::remove(path.c_str());
+}
+
+TEST_F(AreaCoverageLinesTest, AMapWithNoOverridesWritesNoNewKeys)
+{
+  // Older binaries must read what this one writes, and an untouched map should
+  // not change on disk.
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  const auto path = coverage_lines_tmp("mowgli_areas_no_lines.dat");
+  node_->save_areas_for_test(path);
+  const std::string text = read_whole_file(path);
+  EXPECT_EQ(text.find("mow_angle_deg"), std::string::npos);
+  EXPECT_EQ(text.find("ring_direction"), std::string::npos);
+  std::remove(path.c_str());
+}
+
+TEST_F(AreaCoverageLinesTest, ALegacyFileWithoutTheKeysLoadsAsFollowingTheRobotWideSettings)
+{
+  const auto path = coverage_lines_tmp("mowgli_areas_legacy_no_lines.dat");
+  {
+    std::ofstream out(path);
+    out << "area_count: 1\nnext_area_id: 2\n\n";
+    out << "area_0_name: lawn\narea_0_polygon: -3,-3;3,-3;3,3;-3,3\n";
+    out << "area_0_is_navigation: 0\narea_0_id: 1\narea_0_obstacle_count: 0\n";
+  }
+  const auto fresh = reload(path);
+  const auto res = get_from(fresh, 0);
+  ASSERT_TRUE(res->success);
+  EXPECT_FALSE(res->area.has_mow_angle);
+  EXPECT_FALSE(res->area.has_ring_direction);
+  std::remove(path.c_str());
+}
+
+TEST_F(AreaCoverageLinesTest, AHandEditedBadWindingInTheFileIsIgnored)
+{
+  const auto path = coverage_lines_tmp("mowgli_areas_bad_winding.dat");
+  {
+    std::ofstream out(path);
+    out << "area_count: 1\nnext_area_id: 2\n\n";
+    out << "area_0_name: lawn\narea_0_polygon: -3,-3;3,-3;3,3;-3,3\n";
+    out << "area_0_is_navigation: 0\narea_0_id: 1\narea_0_obstacle_count: 0\n";
+    out << "area_0_mow_angle_deg: 40\narea_0_ring_direction: 7\n";
+  }
+  const auto fresh = reload(path);
+  const auto res = get_from(fresh, 0);
+  ASSERT_TRUE(res->success) << "a bad override must never cost the operator the whole area";
+  EXPECT_FALSE(res->area.has_mow_angle);
+  EXPECT_FALSE(res->area.has_ring_direction);
+  std::remove(path.c_str());
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceChangesOnlyTheAddressedArea)
+{
+  ASSERT_TRUE(add_area("a", make_rect(-3, -3, 0, 0), /*is_navigation=*/false));
+  ASSERT_TRUE(add_area("b", make_rect(0, 0, 3, 3), /*is_navigation=*/false));
+  const uint32_t id_b = get_area(1)->area.id;
+
+  const auto res = set_lines(id_b, true, 72.0, true, 2);
+  ASSERT_TRUE(res->success) << res->message;
+
+  EXPECT_FALSE(get_area(0)->area.has_mow_angle);
+  EXPECT_TRUE(get_area(1)->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(get_area(1)->area.mow_angle_deg, 72.0);
+  EXPECT_EQ(get_area(1)->area.ring_direction, 2);
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceAddressesByStableIdNotByIndex)
+{
+  ASSERT_TRUE(add_area("a", make_rect(-3, -3, 0, 0), /*is_navigation=*/false, /*id=*/50));
+  ASSERT_TRUE(add_area("b", make_rect(0, 0, 3, 3), /*is_navigation=*/false, /*id=*/60));
+  ASSERT_TRUE(set_lines(60, true, 10.0, false, 0)->success);
+  EXPECT_TRUE(get_area(1)->area.has_mow_angle);
+  EXPECT_FALSE(get_area(0)->area.has_mow_angle);
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceFoldsTheAngleAndClearsWhatIsNotSet)
+{
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-2, -2, 2, 2), true, 30.0, true, 1));
+  const uint32_t id = get_area(0)->area.id;
+
+  ASSERT_TRUE(set_lines(id, true, 200.0, false, 2)->success);
+  EXPECT_DOUBLE_EQ(get_area(0)->area.mow_angle_deg, 20.0);
+  EXPECT_FALSE(get_area(0)->area.has_ring_direction) << "clearing must drop the override";
+  EXPECT_EQ(get_area(0)->area.ring_direction, 0) << "and leave no stale value behind";
+
+  ASSERT_TRUE(set_lines(id, false, 0.0, false, 0)->success);
+  EXPECT_FALSE(get_area(0)->area.has_mow_angle);
+}
+
+TEST_F(AreaCoverageLinesTest, AnAutoOverrideSurvivesSaveAndLoadAsAnOverride)
+{
+  // One area pinned to auto while the robot-wide angle is fixed: negative angle
+  // with the flag set. It must come back as an override, not as "follow global".
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  ASSERT_TRUE(set_lines(get_area(0)->area.id, true, -1.0, false, 0)->success);
+  EXPECT_TRUE(get_area(0)->area.has_mow_angle);
+  EXPECT_LT(get_area(0)->area.mow_angle_deg, 0.0);
+
+  const auto path = coverage_lines_tmp("mowgli_areas_auto_override.dat");
+  node_->save_areas_for_test(path);
+  const auto res = get_from(reload(path), 0);
+  EXPECT_TRUE(res->area.has_mow_angle);
+  EXPECT_LT(res->area.mow_angle_deg, 0.0);
+  std::remove(path.c_str());
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceRefusesAnUnknownOrZeroId)
+{
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  const auto missing = set_lines(9999, true, 10.0, false, 0);
+  EXPECT_FALSE(missing->success);
+  EXPECT_FALSE(missing->message.empty());
+  // id 0 means "not yet assigned" in MapArea.msg and must never match anything.
+  EXPECT_FALSE(set_lines(0, true, 10.0, false, 0)->success);
+  EXPECT_FALSE(get_area(0)->area.has_mow_angle);
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceRefusesNavigationAreas)
+{
+  ASSERT_TRUE(add_area("path", make_rect(-2, -2, 2, 2), /*is_navigation=*/true));
+  const auto res = set_lines(get_area(0)->area.id, true, 10.0, false, 0);
+  EXPECT_FALSE(res->success);
+  EXPECT_FALSE(get_area(0)->area.has_mow_angle);
+}
+
+TEST_F(AreaCoverageLinesTest, ABadRequestLeavesThePreviousSettingsUntouched)
+{
+  ASSERT_TRUE(add_with_lines("lawn", make_rect(-2, -2, 2, 2), true, 30.0, true, 1));
+  const uint32_t id = get_area(0)->area.id;
+  EXPECT_FALSE(set_lines(id, true, 99.0, true, 5)->success);
+  const auto res = get_area(0);
+  EXPECT_TRUE(res->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(res->area.mow_angle_deg, 30.0);
+  EXPECT_EQ(res->area.ring_direction, 1);
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceBumpsTheGenerationSoOtherClientsRefetch)
+{
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  const auto before = node_->area_list_generation_for_test();
+  ASSERT_TRUE(set_lines(get_area(0)->area.id, true, 10.0, false, 0)->success);
+  EXPECT_EQ(node_->area_list_generation_for_test(), before + 1);
+  // A refused request is not a change.
+  const auto after = node_->area_list_generation_for_test();
+  EXPECT_FALSE(set_lines(9999, true, 10.0, false, 0)->success);
+  EXPECT_EQ(node_->area_list_generation_for_test(), after);
+}
+
+TEST_F(AreaCoverageLinesTest, SetServiceSurvivesASaveAndAFreshLoad)
+{
+  ASSERT_TRUE(add_area("lawn", make_rect(-2, -2, 2, 2), /*is_navigation=*/false));
+  ASSERT_TRUE(set_lines(get_area(0)->area.id, true, 135.0, true, 2)->success);
+  const auto path = coverage_lines_tmp("mowgli_areas_set_lines.dat");
+  node_->save_areas_for_test(path);
+  const auto res = get_from(reload(path), 0);
+  EXPECT_TRUE(res->area.has_mow_angle);
+  EXPECT_DOUBLE_EQ(res->area.mow_angle_deg, 135.0);
+  EXPECT_EQ(res->area.ring_direction, 2);
+  std::remove(path.c_str());
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

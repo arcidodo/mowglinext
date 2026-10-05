@@ -1,7 +1,8 @@
-import {fireEvent, render, screen} from '@testing-library/react';
+import {fireEvent, render, screen, within} from '@testing-library/react';
 import {beforeEach, describe, expect, it, vi} from 'vitest';
 import {CoveragePreviewPanel} from './CoveragePreviewPanel.tsx';
 import {MowingAreaFeature} from '../../../types/map.ts';
+import type {AreaChoices} from '../coveragePreview.ts';
 import type {useCoveragePreview} from '../hooks/useCoveragePreview.ts';
 
 vi.mock('../../../theme/ThemeContext.tsx', () => ({useThemeMode: () => ({colors: {}})}));
@@ -15,8 +16,11 @@ const area = (id: string, name: string) => {
 };
 
 const fns = {
-    selectArea: vi.fn(), setAngle: vi.fn(), setDirection: vi.fn(), reset: vi.fn(), save: vi.fn(), setEnabled: vi.fn(),
+    selectArea: vi.fn(), setAngleMode: vi.fn(), setAngleDeg: vi.fn(), setDirection: vi.fn(),
+    reset: vi.fn(), saveArea: vi.fn(), saveRobotWide: vi.fn(), setEnabled: vi.fn(),
 };
+
+const follow: AreaChoices = {angleMode: 'global', angleDeg: 0, direction: 'global'};
 
 const makePreview = (over: Partial<Preview> = {}): Preview => {
     const areas = [area('a', 'Front lawn')];
@@ -24,21 +28,28 @@ const makePreview = (over: Partial<Preview> = {}): Preview => {
         enabled: true,
         areas,
         area: areas[0],
-        angle: 30,
-        shownAngle: 30,
-        direction: 0,
+        hasAreaId: true,
+        canEdit: true,
+        choices: follow,
+        robotWideAngle: -1,
+        robotWideDirection: 0,
+        shownAngle: 72.4,
         dirty: false,
+        differsFromRobotWide: false,
         saving: false,
         loading: false,
         error: undefined,
-        result: {success: true, swaths: [{}, {}, {}], headland_passes: 2, planned_fraction: 0.934, mow_angle_deg: 30},
+        result: {success: true, swaths: [{}, {}, {}], headland_passes: 2, planned_fraction: 0.934, mow_angle_deg: 72.4},
         layers: {lines: {type: 'FeatureCollection', features: []}, arrows: {type: 'FeatureCollection', features: []}},
         ...fns,
         ...over,
     } as unknown as Preview;
 };
 
-const show = (preview: Preview) => render(<CoveragePreviewPanel preview={preview} areaLabel={(i, name) => name || `Area ${i + 1}`}/>);
+const show = (preview: Preview, resumeAvailable = false) => render(
+    <CoveragePreviewPanel preview={preview} areaLabel={(i, name) => name || `Area ${i + 1}`} resumeAvailable={resumeAvailable}/>);
+
+const button = (name: string) => screen.getByRole('button', {name});
 
 describe('coverage preview panel', () => {
     beforeEach(() => vi.clearAllMocks());
@@ -66,40 +77,83 @@ describe('coverage preview panel', () => {
         expect(screen.queryByText('Area')).not.toBeInTheDocument();
     });
 
-    it('keeps save and reset disabled until something changed', () => {
-        show(makePreview());
-        expect(screen.getByRole('button', {name: 'Save to settings'})).toBeDisabled();
-        expect(screen.getByRole('button', {name: 'Reset'})).toBeDisabled();
-        expect(screen.getByText('These values apply to all areas.')).toBeInTheDocument();
+    it('says an area follows the robot-wide settings, and what they are', () => {
+        show(makePreview({robotWideAngle: 40, robotWideDirection: 2}));
+        expect(screen.getByText('This area follows the robot-wide settings.')).toBeInTheDocument();
+        expect(screen.getByText('Robot-wide (40°)')).toBeInTheDocument();
+        expect(screen.getByText('Robot-wide (Counter-clockwise)')).toBeInTheDocument();
     });
 
-    it('saves and resets once the preview differs from the robot settings', () => {
+    it('names robot-wide auto as auto, and shows the angle the planner chose for it', () => {
+        show(makePreview({robotWideAngle: -1}));
+        expect(screen.getByText('Robot-wide (auto)')).toBeInTheDocument();
+        expect(screen.getByText('Auto (now 72°)')).toBeInTheDocument();
+    });
+
+    it('says an area has its own lines once it overrides something', () => {
+        show(makePreview({choices: {angleMode: 'fixed', angleDeg: 30, direction: 'global'}}));
+        expect(screen.getByText('This area has its own lines.')).toBeInTheDocument();
+    });
+
+    it('keeps save and reset disabled until something changed', () => {
+        show(makePreview());
+        expect(button('Save for this area')).toBeDisabled();
+        expect(button('Reset')).toBeDisabled();
+    });
+
+    it('saves this area and resets once the preview differs from what is stored', () => {
         show(makePreview({dirty: true}));
         expect(screen.getByText('Not saved yet. This only changes the preview.')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('button', {name: 'Save to settings'}));
-        expect(fns.save).toHaveBeenCalledOnce();
-        fireEvent.click(screen.getByRole('button', {name: 'Reset'}));
+        fireEvent.click(button('Save for this area'));
+        expect(fns.saveArea).toHaveBeenCalledOnce();
+        fireEvent.click(button('Reset'));
         expect(fns.reset).toHaveBeenCalledOnce();
     });
 
-    it('sends the chosen perimeter direction', () => {
+    it('cannot save an area while the mower is not idle, and says why', () => {
+        show(makePreview({dirty: true, canEdit: false}));
+        expect(button('Save for this area')).toBeDisabled();
+        expect(screen.getByText(/Stop the mower to change an area's lines/)).toBeInTheDocument();
+        // The preview itself stays usable.
+        expect(button('Reset')).toBeEnabled();
+    });
+
+    it('cannot save an area that has no id yet', () => {
+        show(makePreview({dirty: true, hasAreaId: false}));
+        expect(button('Save for this area')).toBeDisabled();
+        expect(screen.getByText('Save the map first: this area has no id yet.')).toBeInTheDocument();
+    });
+
+    it('warns that a paused mow resumes with a re-planned area, only when it matters', () => {
+        const {rerender} = show(makePreview({dirty: true}), true);
+        expect(screen.getByText(/choose Start fresh instead of Resume/)).toBeInTheDocument();
+        rerender(<CoveragePreviewPanel preview={makePreview({dirty: false})} areaLabel={() => ''} resumeAvailable/>);
+        expect(screen.queryByText(/choose Start fresh instead of Resume/)).not.toBeInTheDocument();
+        rerender(<CoveragePreviewPanel preview={makePreview({dirty: true})} areaLabel={() => ''} resumeAvailable={false}/>);
+        expect(screen.queryByText(/choose Start fresh instead of Resume/)).not.toBeInTheDocument();
+    });
+
+    it('offers the robot-wide save only when what is shown differs from it', () => {
+        const {rerender} = show(makePreview({differsFromRobotWide: false}));
+        expect(button('Use for all areas')).toBeDisabled();
+        rerender(<CoveragePreviewPanel preview={makePreview({differsFromRobotWide: true})} areaLabel={() => ''}/>);
+        fireEvent.click(button('Use for all areas'));
+        expect(fns.saveRobotWide).toHaveBeenCalledOnce();
+    });
+
+    it('picking a direction from the list sends that choice', () => {
         show(makePreview());
-        fireEvent.click(screen.getByText('Counter-clockwise'));
+        const selects = screen.getAllByRole('combobox');
+        fireEvent.mouseDown(selects[1]);
+        fireEvent.click(within(document.body).getByText('Counter-clockwise', {selector: '.ant-select-item-option-content'}));
         expect(fns.setDirection).toHaveBeenCalledWith(2);
-        fireEvent.click(screen.getByText('Clockwise'));
-        expect(fns.setDirection).toHaveBeenCalledWith(1);
     });
 
-    it('turning auto off pins the angle the planner is using right now', () => {
-        show(makePreview({angle: -1, shownAngle: 72.4}));
-        expect(screen.getByText('Auto (now 72°)')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('switch'));
-        expect(fns.setAngle).toHaveBeenCalledWith(72);
-    });
-
-    it('turning auto on asks the planner to choose', () => {
-        show(makePreview({angle: 30, shownAngle: 30}));
-        fireEvent.click(screen.getByRole('switch'));
-        expect(fns.setAngle).toHaveBeenCalledWith(-1);
+    it('picking a fixed angle from the list sends that mode', () => {
+        show(makePreview());
+        const selects = screen.getAllByRole('combobox');
+        fireEvent.mouseDown(selects[0]);
+        fireEvent.click(within(document.body).getByText('Fixed angle', {selector: '.ant-select-item-option-content'}));
+        expect(fns.setAngleMode).toHaveBeenCalledWith('fixed');
     });
 });

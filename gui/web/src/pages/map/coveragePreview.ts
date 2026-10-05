@@ -17,6 +17,69 @@ export type RingDirection = typeof RING_DIRECTION[keyof typeof RING_DIRECTION];
 /** mow_angle_deg < 0 means "auto" (the planner picks the heading). */
 export const MOW_ANGLE_AUTO = -1;
 
+/**
+ * What one area does about its swath angle: follow the robot-wide setting, pin
+ * itself to auto, or use its own fixed angle. The wire form (MapArea) cannot
+ * say "global + a stored number", so this is the model the panel works with.
+ */
+export type AngleMode = "global" | "auto" | "fixed";
+/** The perimeter winding of one area: the robot-wide setting, or its own 0/1/2. */
+export type DirectionChoice = "global" | RingDirection;
+
+export interface AreaChoices {
+    angleMode: AngleMode;
+    /** Meaningful when angleMode is "fixed"; the last fixed value otherwise. */
+    angleDeg: number;
+    direction: DirectionChoice;
+}
+
+/** The MapArea fields that carry an area's overrides (generated type, all optional). */
+export interface AreaOverrideFields {
+    has_mow_angle?: boolean;
+    mow_angle_deg?: number;
+    has_ring_direction?: boolean;
+    ring_direction?: number;
+}
+
+const asRingDirection = (v: number | undefined): RingDirection =>
+    v === 1 || v === 2 ? v : RING_DIRECTION.planner;
+
+/** Read an area's overrides into the panel's model. A negative stored angle is auto. */
+export const choicesFromArea = (area: AreaOverrideFields | undefined): AreaChoices => {
+    const angle = area?.mow_angle_deg ?? 0;
+    return {
+        angleMode: !area?.has_mow_angle ? "global" : angle < 0 ? "auto" : "fixed",
+        angleDeg: area?.has_mow_angle && angle >= 0 ? angle : 0,
+        direction: area?.has_ring_direction ? asRingDirection(area.ring_direction) : "global",
+    };
+};
+
+/** The angle and winding to ASK the planner for: an area follows the robot-wide value unless it overrides. */
+export const requestedValues = (
+    choices: AreaChoices,
+    globalAngleDeg: number,
+    globalDirection: number,
+): {mow_angle_deg: number; ring_direction: RingDirection} => ({
+    mow_angle_deg: choices.angleMode === "global"
+        ? globalAngleDeg
+        : choices.angleMode === "auto" ? MOW_ANGLE_AUTO : choices.angleDeg,
+    ring_direction: choices.direction === "global" ? asRingDirection(globalDirection) : choices.direction,
+});
+
+/** The set_area_coverage_lines body: a flag per value, so "global" clears an override. */
+export const overridesFromChoices = (choices: AreaChoices): Required<AreaOverrideFields> => ({
+    has_mow_angle: choices.angleMode !== "global",
+    mow_angle_deg: choices.angleMode === "global" ? 0 : choices.angleMode === "auto" ? MOW_ANGLE_AUTO : choices.angleDeg,
+    has_ring_direction: choices.direction !== "global",
+    ring_direction: choices.direction === "global" ? 0 : choices.direction,
+});
+
+/** Two choice sets mean the same thing. A stored angle only counts while the mode is "fixed". */
+export const sameChoices = (a: AreaChoices, b: AreaChoices): boolean =>
+    a.angleMode === b.angleMode
+    && a.direction === b.direction
+    && (a.angleMode !== "fixed" || a.angleDeg === b.angleDeg);
+
 export interface CoveragePreviewResult {
     success?: boolean;
     message?: string;

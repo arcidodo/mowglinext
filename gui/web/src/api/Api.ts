@@ -267,11 +267,15 @@ export interface MowgliAddMowingAreaReq {
 
 export interface MowgliMapArea {
   area?: GeometryPolygon;
+  has_mow_angle?: boolean;
+  has_ring_direction?: boolean;
   id?: number;
   is_navigation_area?: boolean;
+  mow_angle_deg?: number;
   name?: string;
   obstacle_info?: MowgliMapObstacleInfo[];
   obstacles?: GeometryPolygon[];
+  ring_direction?: number;
 }
 
 export interface MowgliMapObstacleInfo {
