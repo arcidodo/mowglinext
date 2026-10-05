@@ -126,6 +126,7 @@ if(BUILD_TESTING)
   # colcon tests packages in parallel, and on one shared DDS domain the test
   # processes discover each other's nodes (docs/claude/testing-ci.md).
   find_package(ament_cmake_ros REQUIRED)
+  find_package(tinyxml2 REQUIRED)
   # Exclude uncrustify — we use clang-format (see .clang-format)
   set(ament_cmake_uncrustify_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
@@ -805,6 +806,35 @@ if(BUILD_TESTING)
     ${tf2_TARGETS}
     ${tf2_ros_TARGETS}
     ${tf2_geometry_msgs_TARGETS}
+  )
+
+  # Execute the production rain guard with deterministic external actions.
+  ament_add_ros_isolated_gtest(test_rain_resume
+    test/test_rain_resume.cpp
+    src/docking_nodes.cpp
+    $<TARGET_OBJECTS:mowgli_behavior_condition_nodes>
+    $<TARGET_OBJECTS:mowgli_behavior_status_nodes>
+    $<TARGET_OBJECTS:mowgli_behavior_status_snapshot>
+    $<TARGET_OBJECTS:mowgli_behavior_coverage_persistence>
+  )
+  target_include_directories(test_rain_resume PUBLIC include)
+  target_compile_definitions(test_rain_resume PRIVATE
+    MOWGLI_MAIN_TREE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/trees/main_tree.xml"
+  )
+  target_link_libraries(test_rain_resume
+    ${rclcpp_TARGETS}
+    ${rclcpp_action_TARGETS}
+    ${behaviortree_cpp_TARGETS}
+    ${mowgli_interfaces_TARGETS}
+    ${nav2_msgs_TARGETS}
+    ${nav_msgs_TARGETS}
+    ${geometry_msgs_TARGETS}
+    ${std_msgs_TARGETS}
+    ${std_srvs_TARGETS}
+    ${tf2_TARGETS}
+    ${tf2_ros_TARGETS}
+    ${tf2_geometry_msgs_TARGETS}
+    tinyxml2::tinyxml2
   )
 
   # ---- test_manual_resume ----
