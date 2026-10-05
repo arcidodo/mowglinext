@@ -161,7 +161,14 @@ export interface ApiOkResponse {
 }
 
 export interface ApiSchedule {
-  area?: number;
+  /**
+   * AreaID is the STABLE map area id (MapArea.id) this schedule mows; 0 means
+   * every area (a plain Start). The scheduler resolves it to the current
+   * positional index when the schedule fires. AreaName is a display snapshot
+   * so the GUI and MQTT consumers can label it, even if the area was removed.
+   */
+  areaId?: number;
+  areaName?: string;
   createdAt?: string;
   /** 0=Sunday .. 6=Saturday */
   daysOfWeek?: number[];

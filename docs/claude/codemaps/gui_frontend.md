@@ -58,7 +58,7 @@ Settings updates: `components/settings/HostUpdaterPanel.tsx` and `hooks/useHostU
 | `pages/MapPage.tsx` | 1227 | `/map` Mapbox GL editor + live overlay; `MAPBOX_TOKEN` L46; `editMap` toggle L87 drives stream teardown |
 | `pages/DiagnosticsPage.tsx` | 1979 | `/diagnostics` — 10 panels (system, localization, fusion_graph, heading sources, BT+coverage, cross-checks, calibration, sensors, rosbag, raw `/diagnostics`) rendered as `Collapse` on mobile / tabs on desktop |
 | `pages/SettingsPage.tsx` | 427 | `/settings` shell: nav + search + one Save/Revert bar; section switch L121–241 |
-| `pages/SchedulePage.tsx` | 497 | `/schedule` weekly grid, CRUD on `/api/schedules`, subscribes `map` for zone names, IrriSense chip |
+| `pages/SchedulePage.tsx` | 497 | `/schedule` weekly grid, CRUD on `/api/schedules`, subscribes `map` for area names; the per-card area chip opens a picker (one area by stable `MapArea.id`, or all = `areaId` 0); a 409 from the API = overlapping schedules; IrriSense chip |
 | `pages/StatisticsPage.tsx` | 395 | `/statistics` — `/api/diagnostics/sessions{,/stats}`, `YearOfLawn` heatmap, per-zone bars |
 | `pages/ParametersPage.tsx` | 323 | LIVE ROS param editor, rendered as the **Diagnostics → Advanced parameters** tab (`?tab=parameters`); `/parameters` redirects there, it is no longer in the main menu — (`GET`/`POST /api/params`); tier filter + danger-confirm (`DANGER_RE` L36) |
 | `pages/LogsPage.tsx` | 427 | `/logs` container picker + live tail (`/api/containers/{id}/logs`), level filter, `MAX_LINES = 5000` |

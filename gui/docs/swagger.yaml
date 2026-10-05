@@ -348,8 +348,15 @@ definitions:
     type: object
   api.Schedule:
     properties:
-      area:
+      areaId:
+        description: |-
+          AreaID is the STABLE map area id (MapArea.id) this schedule mows; 0 means
+          every area (a plain Start). The scheduler resolves it to the current
+          positional index when the schedule fires. AreaName is a display snapshot
+          so the GUI and MQTT consumers can label it, even if the area was removed.
         type: integer
+      areaName:
+        type: string
       createdAt:
         type: string
       daysOfWeek:
@@ -1360,6 +1367,10 @@ paths:
           description: Bad Request
           schema:
             $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
       summary: create a schedule
       tags:
       - schedules
@@ -1415,6 +1426,10 @@ paths:
             $ref: '#/definitions/api.ErrorResponse'
         "404":
           description: Not Found
+          schema:
+            $ref: '#/definitions/api.ErrorResponse'
+        "409":
+          description: Conflict
           schema:
             $ref: '#/definitions/api.ErrorResponse'
       summary: update a schedule

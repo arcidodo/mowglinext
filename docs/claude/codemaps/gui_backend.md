@@ -83,7 +83,7 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `gui/pkg/api/calibration.go` | 213 | IMU-yaw / magnetometer / one-click dock calibration service calls (150 s budget) |
 | `gui/pkg/api/calibration_status.go` | 240 | `/calibration/status`: dock pose from yaml, IMU/mag calibration files under `/ros2_ws/maps` |
 | `gui/pkg/api/containers.go` | 234 | Docker list/start/stop/restart + WS log stream with stdcopy demux |
-| `gui/pkg/api/schedules.go` | 224 | Schedule CRUD (`schedule:<id>` DB keys, validation); calls `notifyScheduleChanged()` after every write so `schedule_mqtt.go` mirrors it |
+| `gui/pkg/api/schedules.go` | 224 | Schedule CRUD (`schedule:<id>` DB keys, validation); `areaId` (stable `MapArea.id`, 0 = all) + `areaName` snapshot; `saveScheduleChecked` rejects an ENABLED schedule that starts < 60 min from another enabled one on a shared weekday (wraps midnight/week; HTTP 409, MQTT logged+dropped; disabling always allowed); calls `notifyScheduleChanged()` after every write so `schedule_mqtt.go` mirrors it |
 | `gui/pkg/api/schedule_mqtt.go` | 323 | `ScheduleMqttBridge`: publishes `<prefix>/schedules` retained on the same external broker as `mqtt_bridge_node`, accepts `<prefix>/schedules/set`\|`/delete`, both going through `validateSchedule`/`saveSchedule` — no separate validation path |
 | `gui/pkg/api/remote_access.go` | ~180 | `/remote-access/{settings,status,apply,logout}` (auth key masked, write-only) |
 | `gui/pkg/api/irrisense.go` | 228 | IrriSense settings/status/gardens (token masked, write-only) |
@@ -110,7 +110,7 @@ See `docs/UPDATE_CHECKS.md` for the behavior.
 | `gui/pkg/providers/remote_access_config.go` | ~150 | `remoteAccess.*` DB keys, defaults, validation, masking |
 | `gui/pkg/providers/docker_service.go` | ~180 | Named service-container ops on the Docker SDK (pull, find, create + `CopyToContainer` files, remove) |
 | `gui/pkg/providers/irrisense.go` | 289 | Poll loop (10 min, backoff 1→30 min), `SoilStatus` verdict |
-| `gui/pkg/providers/scheduler.go` | 267 | 1-min ticker → `COMMAND_START` (=1) via `/behavior_tree_node/high_level_control` |
+| `gui/pkg/providers/scheduler.go` | 267 | 1-min ticker → `COMMAND_START` (=1) via `/behavior_tree_node/high_level_control` for `areaId` 0; for one area it resolves the id to map_server's CURRENT index (`/map_server_node/get_mowing_area` walk) and calls `/behavior_tree_node/start_in_area`; a vanished/navigation area or failed lookup skips the run with `lastSkipReason` (never falls back to mowing everything) |
 | `gui/pkg/providers/irrisense_config.go` | 237 | `irrisense.*` DB keys, defaults, validation, masking |
 | `gui/pkg/providers/db.go` | 203 | bitcask DB, env fallbacks, defaults, corruption backup+recovery |
 | `gui/pkg/providers/irrisense_wetness.go` | 145 | Pure wetness rule (`EvaluateWetness`, `EvaluateZones`) |

@@ -175,7 +175,7 @@ func (b *ScheduleMqttBridge) handleSet(payload []byte, retained bool) {
 		sched.ID = fmt.Sprintf("%d", time.Now().UnixNano())
 		sched.CreatedAt = time.Now()
 	}
-	if err := saveSchedule(b.dbProvider, &sched); err != nil {
+	if err := saveScheduleChecked(b.dbProvider, &sched); err != nil {
 		logrus.Error(fmt.Errorf("schedule mqtt bridge: saving schedule: %w", err))
 		return
 	}

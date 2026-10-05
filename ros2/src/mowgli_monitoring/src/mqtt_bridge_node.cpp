@@ -1096,7 +1096,7 @@ void MqttBridgeNode::on_areas_response(uint32_t index,
   // Navigation-only areas are not offered as mowing targets.
   if (!response->area.is_navigation_area)
   {
-    collected->push_back(AreaSummary{index, response->area.name});
+    collected->push_back(AreaSummary{index, response->area.name, response->area.id});
   }
   poll_areas_step(index + 1, generation, collected);
 }
@@ -1721,7 +1721,9 @@ std::string MqttBridgeNode::serialise_areas(const std::vector<AreaSummary>& area
     json += std::to_string(area.index);
     json += ",\"name\":\"";
     json += json_escape(area.name);
-    json += "\"}";
+    json += "\",\"id\":";
+    json += std::to_string(area.id);
+    json += '}';
   }
   json += ']';
   return json;

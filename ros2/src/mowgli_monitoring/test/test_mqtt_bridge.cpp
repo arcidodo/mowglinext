@@ -211,8 +211,8 @@ TEST(HomeAssistantDiscovery, EmptyPrefixFallsBackToMowgliDataTopics)
 TEST(HomeAssistantDiscovery, AddsExplicitMowButtonForEachCurrentArea)
 {
   const std::vector<MqttBridgeNode::AreaSummary> areas{
-      {2, "Back \"Garden\""},
-      {7, "Side lawn"},
+      {2, "Back \"Garden\"", 3},
+      {7, "Side lawn", 5},
   };
   const std::string json = MqttBridgeNode::serialise_home_assistant_discovery("garden", areas);
 
@@ -559,18 +559,21 @@ TEST(SerialiseAreas, ProducesExpectedJsonWithRawIndices)
   // 0..N-1 position — a navigation-only area between two mowing areas would
   // leave a gap here, matching what GetMowingArea/StartInArea expect.
   std::vector<MqttBridgeNode::AreaSummary> areas{
-      {0, "Front Lawn"},
-      {2, "Back Garden"},
+      {0, "Front Lawn", 11},
+      {2, "Back Garden", 7},
   };
 
+  // "id" is the stable MapArea.id: it does not move when other areas are edited.
   EXPECT_EQ(MqttBridgeNode::serialise_areas(areas),
-            "[{\"index\":0,\"name\":\"Front Lawn\"},{\"index\":2,\"name\":\"Back Garden\"}]");
+            "[{\"index\":0,\"name\":\"Front Lawn\",\"id\":11},"
+            "{\"index\":2,\"name\":\"Back Garden\",\"id\":7}]");
 }
 
 TEST(SerialiseAreas, EscapesAreaName)
 {
-  std::vector<MqttBridgeNode::AreaSummary> areas{{1, R"(Side "yard")"}};
-  EXPECT_EQ(MqttBridgeNode::serialise_areas(areas), R"([{"index":1,"name":"Side \"yard\""}])");
+  std::vector<MqttBridgeNode::AreaSummary> areas{{1, R"(Side "yard")", 4}};
+  EXPECT_EQ(MqttBridgeNode::serialise_areas(areas),
+            R"([{"index":1,"name":"Side \"yard\"","id":4}])");
 }
 
 // ===========================================================================

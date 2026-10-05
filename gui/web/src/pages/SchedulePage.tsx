@@ -1,9 +1,10 @@
-import {App, Switch, Tag, TimePicker, Tooltip} from "antd";
+import {App, Modal, Radio, Switch, Tag, TimePicker, Tooltip} from "antd";
 import {useCallback, useEffect, useRef, useState} from "react";
 import {useTranslation} from "react-i18next";
 import {useSettings} from "../hooks/useSettings.ts";
 import {useApi} from "../hooks/useApi.ts";
 import {useIsMobile} from "../hooks/useIsMobile";
+import {useMowingMap} from "../hooks/useMowingMap.ts";
 import {useThemeMode} from "../theme/ThemeContext.tsx";
 import {DashCard, ActionButton, IconPlus, FONT} from "../components/dashboard";
 import {IrriSenseStatusChip} from "../components/schedule/IrriSenseStatusChip.tsx";
@@ -11,7 +12,10 @@ import dayjs from "dayjs";
 
 interface Schedule {
   id: string;
-  area: number;
+  /** Stable map area id (MapArea.id); 0 / absent = every area (a plain Start). */
+  areaId?: number;
+  /** Display snapshot of the area name, kept so the label survives the area's removal. */
+  areaName?: string;
   time: string;
   daysOfWeek: number[];
   enabled: boolean;
@@ -23,6 +27,15 @@ interface Schedule {
 
 const DAY_KEYS = ["dayMon", "dayTue", "dayWed", "dayThu", "dayFri", "daySat", "daySun"] as const;
 const DAY_LETTER_KEYS = ["letterSun", "letterMon", "letterTue", "letterWed", "letterThu", "letterFri", "letterSat"] as const;
+
+/** HTTP status of a thrown API error, when it carries one. */
+function errorStatus(e: unknown): number | undefined {
+  if (typeof e === "object" && e !== null) {
+    const status = (e as {status?: unknown}).status;
+    return typeof status === "number" ? status : undefined;
+  }
+  return undefined;
+}
 
 /** Pull a human-readable message out of an unknown thrown API error. */
 function errorMessage(e: unknown): string | undefined {
@@ -47,6 +60,10 @@ export const SchedulePage = () => {
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [loading, setLoading] = useState(false);
   const fetchedRef = useRef(false);
+  const map = useMowingMap();
+  // The schedule whose area dialog is open, and the choice made in it (0 = all areas).
+  const [areaDialogId, setAreaDialogId] = useState<string | null>(null);
+  const [areaChoice, setAreaChoice] = useState(0);
 
   const fetchSchedules = useCallback(async () => {
     try {
@@ -70,7 +87,7 @@ export const SchedulePage = () => {
     try {
       await guiApi.request({
         path: "/schedules", method: "POST",
-        body: {area: 0, time: "09:00", daysOfWeek: [1, 2, 3, 4, 5], enabled: false, ...body},
+        body: {areaId: 0, time: "09:00", daysOfWeek: [1, 2, 3, 4, 5], enabled: false, ...body},
         format: "json",
       });
       await fetchSchedules();
@@ -151,8 +168,43 @@ export const SchedulePage = () => {
       await guiApi.request({path: `/schedules/${sched.id}`, method: "PUT", body: sched, format: "json"});
       await fetchSchedules();
     } catch (e) {
-      notification.error({message: t('schedulePage.failedToUpdate'), description: errorMessage(e)});
+      // 409 = the change would make two enabled schedules overlap; the server's
+      // message names the clashing start time.
+      notification.error({
+        message: errorStatus(e) === 409 ? t('schedulePage.overlapTitle') : t('schedulePage.failedToUpdate'),
+        description: errorMessage(e),
+      });
     }
+  };
+
+  // Mowing areas the operator can pick (navigation areas are never mowed).
+  const areaOptions = (map.working_area ?? [])
+    .filter(a => typeof a.id === "number" && a.id > 0)
+    .map(a => ({id: a.id as number, name: a.name || t('schedulePage.areaFallback', {id: a.id})}));
+  const mapLoaded = map.working_area !== undefined;
+
+  // What a schedule's area chip says. `missing` = the map is loaded and no longer has the area.
+  const areaLabel = (s: Schedule): {text: string; missing: boolean} => {
+    if (!s.areaId) return {text: t('schedulePage.appliesToAllAreas'), missing: false};
+    const live = areaOptions.find(a => a.id === s.areaId);
+    if (live) return {text: live.name, missing: false};
+    const name = s.areaName || t('schedulePage.areaFallback', {id: s.areaId});
+    return mapLoaded
+      ? {text: t('schedulePage.areaRemoved', {name}), missing: true}
+      : {text: name, missing: false};
+  };
+
+  const openAreaDialog = (sched: Schedule) => {
+    setAreaChoice(sched.areaId ?? 0);
+    setAreaDialogId(sched.id);
+  };
+
+  const saveAreaChoice = () => {
+    const sched = schedules.find(s => s.id === areaDialogId);
+    setAreaDialogId(null);
+    if (!sched || (sched.areaId ?? 0) === areaChoice) return;
+    const picked = areaOptions.find(a => a.id === areaChoice);
+    void handleUpdate({...sched, areaId: areaChoice, areaName: picked?.name ?? ""});
   };
 
   const handleDelete = async (id: string) => {
@@ -196,6 +248,7 @@ export const SchedulePage = () => {
     return sched.daysOfWeek
       .filter(d => d >= 0 && d <= 6)
       .map(dayIndex => ({
+        area: sched.areaId ? areaLabel(sched).text : null,
         day: dayIndex === 0 ? 6 : dayIndex - 1, // convert Sun=0..Sat=6 to Mon=0..Sun=6
         start: startH,
         end: Math.min(startH + 1, 20),
@@ -219,11 +272,21 @@ export const SchedulePage = () => {
             onChange={(checked) => handleUpdate({...sched, enabled: checked})}
           />
           <Tag color={sched.enabled ? "success" : "default"}>{t(sched.enabled ? "schedulePage.on" : "schedulePage.inactive")}</Tag>
-          {/* The backend always issues a full COMMAND_START (see scheduler.go),
-              so the per-schedule area is never honoured. Surface a read-only
-              note instead of a misleading selector; the data field is kept for
-              forward-compat. */}
-          <Tag style={{marginLeft: 'auto'}}>{t('schedulePage.appliesToAllAreas')}</Tag>
+          {/* One area or all: "all" is a plain Start, a specific area goes through
+              start_in_area (see scheduler.go). Clicking opens the area picker. */}
+          <Tag
+            role="button"
+            tabIndex={0}
+            aria-label={t('schedulePage.chooseAreaAria', {index: idx + 1})}
+            color={areaLabel(sched).missing ? "warning" : undefined}
+            style={{marginLeft: 'auto', cursor: 'pointer', marginInlineEnd: 0}}
+            onClick={() => openAreaDialog(sched)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAreaDialog(sched); }
+            }}
+          >
+            {areaLabel(sched).text}
+          </Tag>
         </div>
         <div style={{fontSize: 12, color: colors.textSecondary}}>{t("schedulePage.autoSaveHint")}</div>
         <TimePicker
@@ -294,6 +357,38 @@ export const SchedulePage = () => {
     );
   };
 
+  const dialogSchedule = schedules.find(s => s.id === areaDialogId);
+  const areaDialog = (
+    <Modal
+      open={dialogSchedule !== undefined}
+      title={t('schedulePage.areaDialogTitle', {index: dialogSchedule ? schedules.indexOf(dialogSchedule) + 1 : 0})}
+      okText={t('schedulePage.saveArea')}
+      cancelText={t('schedulePage.cancel')}
+      onOk={saveAreaChoice}
+      onCancel={() => setAreaDialogId(null)}
+      destroyOnHidden
+    >
+      <div style={{fontSize: 12, color: colors.textSecondary, marginBottom: 12}}>{t('schedulePage.areaDialogHint')}</div>
+      <Radio.Group
+        value={areaChoice}
+        onChange={(e) => setAreaChoice(e.target.value as number)}
+        style={{display: 'flex', flexDirection: 'column', gap: 10}}
+      >
+        <Radio value={0}>
+          {t('schedulePage.allAreasOption')}
+          <div style={{fontSize: 11, color: colors.textSecondary}}>{t('schedulePage.allAreasOptionHint')}</div>
+        </Radio>
+        {areaOptions.map(a => <Radio key={a.id} value={a.id}>{a.name}</Radio>)}
+      </Radio.Group>
+      {areaOptions.length === 0 && (
+        <div style={{fontSize: 12, color: colors.textSecondary, marginTop: 12}}>{t('schedulePage.noAreasHint')}</div>
+      )}
+      {dialogSchedule && areaLabel(dialogSchedule).missing && (
+        <div style={{fontSize: 12, color: colors.amber, marginTop: 12}}>{t('schedulePage.areaRemovedWarning')}</div>
+      )}
+    </Modal>
+  );
+
   const pageHeader = (
     <div>
       <div style={{
@@ -335,6 +430,7 @@ export const SchedulePage = () => {
           </>
         )}
         {schedules.map((s, i) => scheduleCard(s, i))}
+        {areaDialog}
       </div>
     );
   }
@@ -343,6 +439,7 @@ export const SchedulePage = () => {
   return (
     <div style={{display: 'flex', flexDirection: 'column', gap: 16}}>
       {pageHeader}
+      {areaDialog}
       {/* Weekly grid */}
       <DashCard>
         <div style={{display: 'grid', gridTemplateColumns: '48px repeat(7, 1fr)', gap: 6}}>
@@ -374,7 +471,7 @@ export const SchedulePage = () => {
                   }}>
                     {isStart && (
                       <>
-                        <div style={{fontSize: 11, fontWeight: 700, color: run.enabled ? run.color : colors.textSecondary, lineHeight: 1.1}}>{t(run.enabled ? "schedulePage.blockStartHint" : "schedulePage.inactive")}</div>
+                        <div style={{fontSize: 11, fontWeight: 700, color: run.enabled ? run.color : colors.textSecondary, lineHeight: 1.1}}>{run.enabled ? (run.area ? t('schedulePage.blockStartArea', {area: run.area}) : t('schedulePage.blockStartHint')) : t('schedulePage.inactive')}</div>
                         <div style={{fontSize: 10, color: colors.textDim, marginTop: 2}}>{run.start}:00 -- {run.end}:00</div>
                       </>
                     )}
