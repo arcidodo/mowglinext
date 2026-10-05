@@ -43,11 +43,18 @@ import {EditLidarCorridorModal} from "./map/components/EditLidarCorridorModal.ts
 import {DEFAULT_CORRIDOR_WIDTH_M, useLidarCorridors} from "./map/hooks/useLidarCorridors.ts";
 import {buildCorridorSideRuns, dropLiveVertex, simplifyPolyline, smoothPolyline, type XY} from "./map/utils/corridorGeometry.ts";
 import {useObstacleClearancePreview} from "./map/hooks/useObstacleClearancePreview.ts";
+import {useCoveragePreview} from "./map/hooks/useCoveragePreview.ts";
+import {CoveragePreviewPanel} from "./map/components/CoveragePreviewPanel.tsx";
 import {calculateMapViewportBounds} from "./map/utils/mapViewport.ts";
 
 // Distinct from the red drawn-obstacle fill, so the toggleable
 // clearance-preview outline is never mistaken for it.
 const OBSTACLE_CLEARANCE_PREVIEW_COLOR = '#faad14';
+// Mowing-lines overlay: perimeter rounds and swaths need to stay distinct from
+// each other and from the amber clearance outline, on satellite imagery.
+const COVERAGE_RING_COLOR = '#00d8ff';
+const COVERAGE_SWATH_COLOR = '#ffe14a';
+const COVERAGE_START_COLOR = '#34c759';
 import {extractObstacleProposals, isDigProposal} from "./map/utils/obstacleProposals.ts";
 import {MapOffsetPanel} from "./map/components/MapOffsetPanel.tsx";
 import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
@@ -907,6 +914,25 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
     );
     const obstacleClearancePreview = useObstacleClearancePreview(obstacleFeaturesList, datum, offsetX, offsetY);
 
+    // The "mowing lines" overlay: the real planner's rings and swaths for one
+    // area, with a mow angle / perimeter direction to try before saving.
+    const mowingAreaFeaturesList = useMemo(
+        (): MowingAreaFeature[] => Object.values(features).filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature),
+        [features],
+    );
+    const coveragePreview = useCoveragePreview({
+        areas: mowingAreaFeaturesList,
+        obstacles: obstacleFeaturesList,
+        datum,
+        offsetX,
+        offsetY,
+        savedAngleDeg: Number(settings.mow_angle_deg ?? -1),
+        savedDirection: Number(settings.mow_direction ?? 0),
+        preferredAreaId: editMap ? selectedFeatureIds[0] : undefined,
+    });
+    const coveragePreviewAreaLabel = (index: number, name: string) =>
+        name || t('mapAreasList.unnamedArea', {index: index + 1});
+
     // The gl-draw feature currently being drawn for a corridor: it is added to
     // gl-draw's OWN store the instant draw_line_string mode starts (onSetup)
     // and kept live-updated on every tap — reading it back via the public
@@ -1668,6 +1694,42 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 paint={{'line-color': OBSTACLE_CLEARANCE_PREVIEW_COLOR, 'line-width': 2, 'line-dasharray': [1, 1.5]}}/>
                         </Source>
                     )}
+                    {/* Mowing lines: the planner's headland rings and swaths for the chosen
+                        area. Arrowheads are polygons drawn to scale (no font/sprite needed)
+                        and show the driving direction; the green dot is where it starts. */}
+                    {coveragePreview.enabled && (
+                        <>
+                            <Source type={"geojson"} id={"coverage-preview-lines"} data={coveragePreview.layers.lines}>
+                                <Layer type={"line"} id={"coverage-preview-swaths"}
+                                    filter={['==', ['get', 'kind'], 'swath']}
+                                    layout={{'line-cap': 'butt', 'line-join': 'round'}}
+                                    paint={{'line-color': COVERAGE_SWATH_COLOR, 'line-width': 1.5, 'line-opacity': 0.9}}/>
+                                <Layer type={"line"} id={"coverage-preview-rings"}
+                                    filter={['==', ['get', 'kind'], 'ring']}
+                                    layout={{'line-cap': 'round', 'line-join': 'round'}}
+                                    paint={{'line-color': COVERAGE_RING_COLOR, 'line-width': 2, 'line-opacity': 0.95}}/>
+                            </Source>
+                            <Source type={"geojson"} id={"coverage-preview-arrows"} data={coveragePreview.layers.arrows}>
+                                <Layer type={"fill"} id={"coverage-preview-arrow-fill"}
+                                    filter={['in', ['get', 'kind'], ['literal', ['ring-arrow', 'swath-arrow']]]}
+                                    paint={{
+                                        'fill-color': ['match', ['get', 'kind'], 'ring-arrow', COVERAGE_RING_COLOR, COVERAGE_SWATH_COLOR],
+                                        'fill-opacity': 1,
+                                    }}/>
+                                <Layer type={"line"} id={"coverage-preview-arrow-outline"}
+                                    filter={['in', ['get', 'kind'], ['literal', ['ring-arrow', 'swath-arrow']]]}
+                                    paint={{'line-color': '#000000', 'line-width': 1, 'line-opacity': 0.7}}/>
+                                <Layer type={"circle"} id={"coverage-preview-start"}
+                                    filter={['==', ['get', 'kind'], 'start']}
+                                    paint={{
+                                        'circle-radius': 6,
+                                        'circle-color': COVERAGE_START_COLOR,
+                                        'circle-stroke-color': '#ffffff',
+                                        'circle-stroke-width': 2,
+                                    }}/>
+                            </Source>
+                        </>
+                    )}
                     {/* The actual ignored band (width_m), under everything else so the
                         centerline / vertex handles / draft points stay legible on top.
                         A narrow band (the default is 0.2 m) can rasterize to a
@@ -1771,6 +1833,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                         onToggleSatellite={() => setUseSatellite(!useSatellite)}
                         showObstacleClearance={obstacleClearancePreview.enabled}
                         onToggleObstacleClearance={() => obstacleClearancePreview.setEnabled((v) => !v)}
+                        showCoveragePreview={coveragePreview.enabled}
+                        onToggleCoveragePreview={() => coveragePreview.setEnabled((v) => !v)}
                         mowerAppearanceId={mowerAppearance.id}
                         onMowerAppearanceChange={handleMowerAppearanceChange}
                         dockAppearanceId={dockAppearance.id}
@@ -1793,13 +1857,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 {/* Mobile: obstacle proposals need an accept/reject surface too — the
                     operator is usually standing next to the robot with a phone. The
                     mobile toolbar lives at the bottom, so this card takes the top. */}
-                {isMobile && !editMap && obstacleProposals.length > 0 && (
-                    <div style={{position: 'absolute', top: 12, left: 12, right: 12, zIndex: 10, maxHeight: '40%', overflowY: 'auto', background: colors.glassBackground, borderRadius: 14, border: colors.glassBorder, boxShadow: colors.glassShadow}}>
+                {isMobile && !editMap && (obstacleProposals.length > 0 || coveragePreview.enabled) && (
+                    <div style={{position: 'absolute', top: 12, left: 12, right: 12, zIndex: 10, maxHeight: '45%', overflowY: 'auto', background: colors.glassBackground, borderRadius: 14, border: colors.glassBorder, boxShadow: colors.glassShadow}}>
                         <ObstacleProposalsPanel
                             proposals={obstacleProposals}
                             selectedProposalId={selectedProposalId}
                             onHoverProposal={setSelectedProposalId}
                         />
+                        {coveragePreview.enabled && (
+                            <div style={{borderTop: obstacleProposals.length > 0 ? `1px solid ${colors.borderSubtle}` : undefined}}>
+                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel}/>
+                            </div>
+                        )}
                     </div>
                 )}
                 {/* Desktop: Edit mode — left vertical toolbar */}
@@ -1848,6 +1917,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                             onToggleSatellite={() => setUseSatellite(!useSatellite)}
                             showObstacleClearance={obstacleClearancePreview.enabled}
                             onToggleObstacleClearance={() => obstacleClearancePreview.setEnabled((v) => !v)}
+                            showCoveragePreview={coveragePreview.enabled}
+                            onToggleCoveragePreview={() => coveragePreview.setEnabled((v) => !v)}
                             onManualMode={handleManualMode}
                             onStopManualMode={handleStopManualMode}
                             onBackupMap={handleBackupMap}
@@ -1886,6 +1957,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                     selectedProposalId={selectedProposalId}
                                     onHoverProposal={setSelectedProposalId}
                                 />
+                            </div>
+                        )}
+                        {coveragePreview.enabled && (
+                            <div style={{borderTop: `1px solid ${colors.borderSubtle}`}}>
+                                <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel}/>
                             </div>
                         )}
                         {/* This wrapper must itself be a shrinkable flex participant

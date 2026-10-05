@@ -554,3 +554,68 @@ func TestServiceRoute_CoverageOrientation(t *testing.T) {
 		assert.Contains(t, w.Body.String(), `"next_perpendicular":true`)
 	}
 }
+
+func TestServiceRoute_PreviewCoverage(t *testing.T) {
+	square := map[string]any{"points": []map[string]any{{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 10, "y": 10}, {"x": 0, "y": 10}}}
+
+	call := func(mock *types.MockRosProvider, body map[string]any) *httptest.ResponseRecorder {
+		raw, _ := json.Marshal(body)
+		req := httptest.NewRequest("POST", "/api/mowglinext/call/preview_coverage", bytes.NewReader(raw))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		setupMowgliNextRouter(mock).ServeHTTP(w, req)
+		return w
+	}
+
+	t.Run("omitted angle and direction mean auto and live, not zero", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		var got mowgli.PreviewCoverageReq
+		mock.ServiceResponder = func(service string, req any, res any) {
+			assert.Equal(t, "/coverage_server/preview_coverage", service)
+			got = *req.(*mowgli.PreviewCoverageReq)
+			*res.(*mowgli.PreviewCoverageRes) = mowgli.PreviewCoverageRes{Success: true, MowAngleDeg: 42}
+		}
+		w := call(mock, map[string]any{"outer_boundary": square})
+		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, -1.0, got.MowAngleDeg)
+		assert.Equal(t, int32(-1), got.RingDirection)
+		assert.Len(t, got.OuterBoundary.Points, 4)
+		// Empty lists are sent as lists, never null.
+		assert.Contains(t, w.Body.String(), `"rings":[]`)
+		assert.Contains(t, w.Body.String(), `"swaths":[]`)
+	})
+
+	t.Run("an explicit zero is passed through", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		var got mowgli.PreviewCoverageReq
+		mock.ServiceResponder = func(service string, req any, res any) {
+			got = *req.(*mowgli.PreviewCoverageReq)
+			*res.(*mowgli.PreviewCoverageRes) = mowgli.PreviewCoverageRes{Success: true}
+		}
+		w := call(mock, map[string]any{"outer_boundary": square, "mow_angle_deg": 0, "ring_direction": 0, "perpendicular": true})
+		assert.Equal(t, 200, w.Code)
+		assert.Equal(t, 0.0, got.MowAngleDeg)
+		assert.Equal(t, int32(0), got.RingDirection)
+		assert.True(t, got.Perpendicular)
+	})
+
+	t.Run("a planner refusal is relayed as a normal answer", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceResponder = func(service string, req any, res any) {
+			*res.(*mowgli.PreviewCoverageRes) = mowgli.PreviewCoverageRes{Success: false, Message: "field too small after insets"}
+		}
+		w := call(mock, map[string]any{"outer_boundary": square})
+		assert.Equal(t, 200, w.Code)
+		assert.Contains(t, w.Body.String(), `"success":false`)
+		assert.Contains(t, w.Body.String(), "field too small")
+	})
+
+	t.Run("a boundary with fewer than three points is rejected before ROS", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		mock.ServiceResponder = func(service string, req any, res any) {
+			t.Fatal("must not reach the service")
+		}
+		w := call(mock, map[string]any{"outer_boundary": map[string]any{"points": []map[string]any{{"x": 0, "y": 0}, {"x": 1, "y": 0}}}})
+		assert.Equal(t, 400, w.Code)
+	})
+}
