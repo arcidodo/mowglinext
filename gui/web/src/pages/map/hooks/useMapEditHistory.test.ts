@@ -61,6 +61,47 @@ describe('useMapEditHistory', () => {
         expect(setEditMap).toHaveBeenCalledWith(true);
     });
 
+    describe('beforeEdit (the map backup taken before the editor opens)', () => {
+        function renderWith(beforeEdit: () => Promise<boolean>) {
+            return renderHook(() =>
+                useMapEditHistory({features, setFeatures, editMap, setEditMap, beforeEdit})
+            );
+        }
+
+        it('opens the editor only after the backup resolved true', async () => {
+            let finish!: (ok: boolean) => void;
+            const beforeEdit = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+            const {result} = renderWith(beforeEdit);
+
+            act(() => { result.current.handleEditMap(); });
+            expect(beforeEdit).toHaveBeenCalledOnce();
+            expect(setEditMap).not.toHaveBeenCalled(); // not before the copy exists
+
+            await act(() => Promise.resolve(finish(true)));
+            expect(setEditMap).toHaveBeenCalledWith(true);
+        });
+
+        it('keeps the editor closed when the backup failed', async () => {
+            const {result} = renderWith(vi.fn(() => Promise.resolve(false)));
+
+            await act(() => Promise.resolve(result.current.handleEditMap()));
+            expect(setEditMap).not.toHaveBeenCalled();
+        });
+
+        it('ignores a second click while the backup is still being made', async () => {
+            let finish!: (ok: boolean) => void;
+            const beforeEdit = vi.fn(() => new Promise<boolean>((resolve) => { finish = resolve; }));
+            const {result} = renderWith(beforeEdit);
+
+            act(() => { result.current.handleEditMap(); });
+            act(() => { result.current.handleEditMap(); });
+            expect(beforeEdit).toHaveBeenCalledOnce();
+
+            await act(() => Promise.resolve(finish(true)));
+            expect(setEditMap).toHaveBeenCalledTimes(1);
+        });
+    });
+
     it('setHasUnsavedChanges updates state', () => {
         const {result} = renderHistory();
         act(() => {
