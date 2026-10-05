@@ -472,8 +472,16 @@ create a schedule that starts the mower unattended, exactly as consequential as 
 Omit `id` (or send an `id` that does not exist yet) to **create** a schedule — the server assigns
 the `id`. Send an existing `id` to **update** that schedule; `createdAt`/`lastRun`/
 `lastSkipReason`/`lastSkippedAt` are preserved from the existing record regardless of what the
-payload contains. `time` must be `HH:mm` and `daysOfWeek` must have at least one entry in `0`–`6` —
-the same validation `POST/PUT /schedules` applies. **Enabled schedules may not overlap:** two
+payload contains. `time` must be `HH:mm` and `daysOfWeek` must have at least one entry in `0`–`6`.
+
+On an update, an **omitted `areaId` means "unchanged"** (so an integration written before per-area
+schedules, which only flips `enabled`, does not reset a per-area schedule to all areas); an explicit
+`areaId` always wins, and `0` is an explicit "all areas". An omitted `areaName` is kept only while
+`areaId` is the same area. On a create, omitting `areaId` means all areas. Prefer echoing the full
+record you read from `<prefix>/schedules` when updating. `time` and `daysOfWeek` are still required
+on every update (the same validation `POST/PUT /schedules` applies).
+
+**Enabled schedules may not overlap:** two
 enabled schedules sharing a weekday must start at least 60 minutes apart (the distance wraps
 across midnight and the end of the week); a disabled schedule is never checked, so disabling is
 always accepted. `POST/PUT /schedules` answers an overlap with `409`; here, as for any invalid

@@ -116,6 +116,24 @@ describe('schedule page area picker', () => {
         expect(putBodies()).toHaveLength(0);
     });
 
+    it('toggling a per-area schedule on or off keeps its area', async () => {
+        await showPage([stored({areaId: 7, areaName: 'Back garden', enabled: true})]);
+
+        fireEvent.click(screen.getByRole('switch'));
+
+        await waitFor(() => expect(putBodies()).toHaveLength(1));
+        expect(putBodies()[0].body).toMatchObject({enabled: false, areaId: 7, areaName: 'Back garden'});
+    });
+
+    it('changing the time or a day of a per-area schedule keeps its area', async () => {
+        await showPage([stored({areaId: 11, areaName: 'Front lawn', daysOfWeek: [1, 2]})]);
+
+        fireEvent.click(screen.getByRole('button', {name: 'Wed'}));
+
+        await waitFor(() => expect(putBodies()).toHaveLength(1));
+        expect(putBodies()[0].body).toMatchObject({areaId: 11, areaName: 'Front lawn', daysOfWeek: [1, 2, 3]});
+    });
+
     it('explains an overlap rejection from the server', async () => {
         await showPage([stored({enabled: false})]);
         mocks.request.mockImplementation(({method}) => {
