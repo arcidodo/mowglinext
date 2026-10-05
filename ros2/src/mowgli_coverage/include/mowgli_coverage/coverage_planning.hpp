@@ -449,9 +449,10 @@ std::vector<std::pair<double, double>> buildContinuousPath(
 // connector exists. This includes straight fallbacks between antiparallel
 // swaths: keeping them would hand FTC a zero-radius corner and cause alternating
 // saturated steering commands.
-// Swath pieces are nearest-endpoint chained before joining (identical to the
-// plain serpentine on a convex field; mows each lobe of a concave/hole-split
-// field contiguously so a lobe change costs ONE split, not one per column).
+// Swath pieces are chained by feasible connector length plus a stop/turn
+// penalty for pivot or transit joins. The original first swath remains the seed;
+// all swaths are visited once. This can skip a row for a shorter, wider turn and
+// return for the skipped row later; it never changes the cut geometry.
 // The caller (FollowStrip) drives them in order, bridging every sub-path boundary
 // with a blade-off, costmap-aware Nav2 reposition/reorientation. Sub-paths with
 // fewer than two points are dropped.
@@ -502,8 +503,12 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
 // (coverage_planning.cpp) for the full rationale and the O(n^3)
 // kMaxSeedSearchSize bound. Returns the input unchanged (same order and
 // direction) when no reordering would shorten the total transit.
+// The first preserve_direction_count input paths may move in the sequence but
+// may not reverse. The builder protects ALL paths containing headland rings,
+// including obstacle loops; sub-path 0 always retains its historical protection.
 std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTransit(
-    std::vector<std::vector<std::pair<double, double>>> sub_paths);
+    std::vector<std::vector<std::pair<double, double>>> sub_paths,
+    std::size_t preserve_direction_count = 1);
 
 // 2-D point-in-polygon (ray casting) against `ring`, a list of (x, y)
 // vertices. Open or closed ring; winding-independent. Used by the server to

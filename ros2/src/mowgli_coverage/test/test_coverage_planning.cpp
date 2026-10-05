@@ -480,12 +480,12 @@ TEST(CoverageContinuousPath, ContinuousPathAvoidsHole)
 
   // The DRIVER follows the split sub-paths; each must be internally hole-free.
   // The gap between consecutive sub-paths is bridged by a blade-off Nav2 transit
-  // (routes around the hole), so it is intentionally NOT continuous here.
+  // (routes around the hole); safe continuous routes are also allowed.
   const auto subs =
       buildContinuousSubPaths(plan, plan.safe_boundary, kTurnRadius, kMinTurnRadius, kStep);
-  ASSERT_GE(subs.size(), 2u)
-      << "a central hole must split the path into >=2 sub-paths (else a connector "
-         "cut through the hole)";
+  ASSERT_FALSE(subs.empty());
+  // A connector-aware sweep can route around the hole without splitting.
+  // Verify the geometry below instead of requiring the old greedy split count.
   // At most one break can be introduced per join. This catches accidental
   // fragmentation inside a segment while allowing untrackable swath-end
   // fallbacks to become explicit blade-off transitions.
@@ -532,7 +532,10 @@ TEST_P(CrossHatchContinuousPath, HoleFreeFieldSplitsDiscontinuousFallbacks)
   ASSERT_TRUE(plan.safe_holes.empty()) << "test field must be hole-free";
   mowgli_coverage::ConnectorStats stats;
   const auto subs = buildContinuousSubPaths(plan, plan.safe_boundary, 0.18, 0.15, 0.05, &stats);
-  EXPECT_GT(stats.split, 0u);
+  // Wider row choices may now avoid every fallback. An actual untrackable
+  // two-row join is checked separately by the pivot-join fixtures.
+  EXPECT_GT(stats.attempted, 0u);
+  EXPECT_EQ(stats.arc + stats.split, stats.attempted);
   EXPECT_EQ(stats.straight_kept, 0u);
   EXPECT_EQ(subs.size(), stats.split + 1u);
 }
@@ -557,7 +560,11 @@ TEST(CoverageContinuousPath, SingleCentralHoleSplitsOnlyAtJoins)
   // inset 0.0 leaves safe_boundary empty → fall back to the raw field ring.
   const auto boundary = plan.safe_boundary.empty() ? squareRing(kSide) : plan.safe_boundary;
   const auto subs = buildContinuousSubPaths(plan, boundary, 0.18, 0.15, 0.05);
-  EXPECT_GE(subs.size(), 2u) << "the central hole must still split the path (safety)";
+  ASSERT_FALSE(subs.empty());
+  for (const auto& path : subs)
+    for (const auto& point : path)
+      for (const auto& safe_hole : plan.safe_holes)
+        EXPECT_FALSE(pointInRing(point.first, point.second, safe_hole));
   EXPECT_LE(subs.size(), plan.rings.size() + plan.swaths.size());
 }
 
@@ -582,7 +589,7 @@ TEST(CoverageContinuousPath, SubPathReorderStaysHoleFreeAndDeterministic)
   // 10 m square with two separated holes. Sub-paths split ONLY where a blade-on
   // connector cannot clear a hole (obstacle-driven, issue #333) — a lobe change
   // that passes to the SIDE of a hole stays blade-on, so this field yields a
-  // small number of hole-free lobes (>= 2), enough to exercise the NN reorder.
+  // small number of hole-free lobes (possibly one with connector-aware ordering).
   // The reorder's SAFETY contract (every sub-path stays hole-free; the order is
   // deterministic for BT resume-by-index) is what this test guards, not a
   // specific lobe count.
@@ -604,7 +611,7 @@ TEST(CoverageContinuousPath, SubPathReorderStaysHoleFreeAndDeterministic)
   ASSERT_GE(plan.safe_holes.size(), 2u) << "both holes must reach the plan as safe_holes";
   const auto subs =
       buildContinuousSubPaths(plan, plan.safe_boundary, kTurnRadius, kMinTurnRadius, kStep);
-  ASSERT_GE(subs.size(), 2u) << "holes must split the plan into >=2 hole-free lobes to reorder";
+  ASSERT_FALSE(subs.empty());  // Avoiding a hole no longer requires a split.
 
   // (1) Hole-free preserved after reorder/reversal.
   std::size_t in_hole = 0, total = 0;
@@ -882,7 +889,10 @@ TEST_P(CrossHatchContinuousPath, NotchFieldLobeChainedNoMidFieldJoins)
     double run = 0.0;
     for (std::size_t i = 0; i < path.size(); ++i)
     {
-      if (!pointInRing(path[i].first, path[i].second, plan.safe_boundary))
+      // Match the planner's 1 mm on-edge predicate (ring/swath endpoints may
+      // sit on either side of the strict ray-casting classification).
+      if (!pointInRing(path[i].first, path[i].second, plan.safe_boundary) &&
+          distanceToRing(path[i].first, path[i].second, plan.safe_boundary) > 0.001)
       {
         ++oob;
       }
@@ -1838,20 +1848,26 @@ TEST(CoverageContinuousPath, ShippedGeometryTightSwathLimitFragmentsUTurns)
   constexpr int kLimit = 3;  // apron (3 - 0.5) * 0.16 = 0.40 m < ~0.49 m needed
   const auto cell = makeSquare(kSize);
 
-  const auto plan = planBoustrophedon(cell,
-                                      kOpWidth,
-                                      0.9,
-                                      kRings,
-                                      /*chassis_safety_inset=*/0.0,
-                                      -1.0,
-                                      kMinSwath,
-                                      0,
-                                      kMinTurnRadius,
-                                      false,
-                                      kLimit);
+  auto plan = planBoustrophedon(cell,
+                                kOpWidth,
+                                0.9,
+                                kRings,
+                                /*chassis_safety_inset=*/0.0,
+                                -1.0,
+                                kMinSwath,
+                                0,
+                                kMinTurnRadius,
+                                false,
+                                kLimit);
   ASSERT_FALSE(plan.rings.empty());
   ASSERT_FALSE(plan.swaths.empty());
   ASSERT_GE(plan.swath_turn_envelope.size(), 3u) << "limit=3 of 5 should populate an envelope";
+
+  // Isolate an adjacent-row join. With a full field the ordering optimiser
+  // can skip a row for a wider arc, so fragmentation is no longer inevitable.
+  ASSERT_GE(plan.swaths.size(), 2u);
+  plan.swaths.resize(2);
+  plan.rings.clear();
 
   mowgli_coverage::ConnectorStats baseline_stats;
   (void)buildContinuousSubPaths(
@@ -2818,9 +2834,15 @@ constexpr int kShippedHeadlandPasses = 5;  // mowgli_robot.yaml num_headland_pas
 
 // Plan a 6 m square with `rings` perimeter passes, then join it exactly the way
 // coverage_server does — bounded by connector_clearance_boundary, not the looser
-// safe_boundary — and return how every join resolved.
-mowgli_coverage::ConnectorStats connectorOutcomes(
-    int rings, double op_width, double headland, double turn_radius, double min_turn_radius)
+// safe_boundary — and return how every join resolved. adjacent_pairs_only
+// isolates each consecutive row pair to test the connector's apron constraint
+// independently of the route optimiser's ability to select wider turns.
+mowgli_coverage::ConnectorStats connectorOutcomes(int rings,
+                                                  double op_width,
+                                                  double headland,
+                                                  double turn_radius,
+                                                  double min_turn_radius,
+                                                  bool adjacent_pairs_only = false)
 {
   const f2c::types::Cell cell = makeSquare(6.0);
   const auto plan =
@@ -2830,8 +2852,21 @@ mowgli_coverage::ConnectorStats connectorOutcomes(
                                        ? plan.connector_clearance_boundary
                                        : plan.safe_boundary;
   mowgli_coverage::ConnectorStats stats;
-  (void)buildContinuousSubPaths(
-      plan, connector_boundary, turn_radius, min_turn_radius, kStatsStep, &stats);
+  if (adjacent_pairs_only)
+  {
+    for (std::size_t i = 1; i < plan.swaths.size(); ++i)
+    {
+      BoustrophedonPlan pair;
+      pair.swaths = {plan.swaths[i - 1], plan.swaths[i]};
+      (void)buildContinuousSubPaths(
+          pair, connector_boundary, turn_radius, min_turn_radius, kStatsStep, &stats);
+    }
+  }
+  else
+  {
+    (void)buildContinuousSubPaths(
+        plan, connector_boundary, turn_radius, min_turn_radius, kStatsStep, &stats);
+  }
   return stats;
 }
 }  // namespace
@@ -2995,10 +3030,18 @@ TEST(CoverageConnectorStats, EveryJoinIsAnArcWhenSpacingExceedsTwiceTheTurnRadiu
 TEST(CoverageConnectorStats, SwathEndArcsAreDecidedByTheHeadlandApronNotTheRadius)
 {
   constexpr int kInsufficientPasses = 2;
-  const auto insufficient = connectorOutcomes(
-      kInsufficientPasses, kStatsOpWidth, kStatsHeadland, kStatsTurnRadius, kStatsMinTurnRadius);
-  const auto production = connectorOutcomes(
-      kShippedHeadlandPasses, kStatsOpWidth, kStatsHeadland, kStatsTurnRadius, kStatsMinTurnRadius);
+  const auto insufficient = connectorOutcomes(kInsufficientPasses,
+                                              kStatsOpWidth,
+                                              kStatsHeadland,
+                                              kStatsTurnRadius,
+                                              kStatsMinTurnRadius,
+                                              true);
+  const auto production = connectorOutcomes(kShippedHeadlandPasses,
+                                            kStatsOpWidth,
+                                            kStatsHeadland,
+                                            kStatsTurnRadius,
+                                            kStatsMinTurnRadius,
+                                            true);
 
   ASSERT_GT(insufficient.attempted, 10u);
   ASSERT_GT(production.attempted, 10u);
