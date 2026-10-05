@@ -9,6 +9,38 @@
 > uses no TF. Index generated 2026-09-03 at f21729e9; regenerate when files are added/removed.
 > Loaded on demand from `ros2/CLAUDE.md`.
 
+## Route-ordering update (2026-10-05)
+
+Regenerated from the current planner and test registration; the older line-number map
+below predates this change.
+
+- `coverage_planning.cpp:1791`: `buildContinuousSubPaths` keeps
+  outer perimeter loops in their original order, groups the remaining obstacle loops
+  by proximity, then chooses swaths by the feasible connector's length. Pivot heading
+  changes are charged as equivalent arc length at the configured radius; blade-off
+  relocations receive a full-circle penalty. These are ordering heuristics, not Nav2
+  route lengths or execution-time estimates. Every original mowing primitive remains.
+  The seed stays the first generated swath. The same boundary, hole, minimum-radius,
+  pivot-sweep and optional swath-turn-envelope checks still decide each driven join.
+- `coverage_planning.cpp:2323`:
+  `orderSubPathsForMinimalTransit` now receives `preserve_direction_count` (default 1).
+  The builder protects **every** ring-bearing sub-path, including obstacle loops and
+  mixed ring/swath paths, from reversal; all may still move in the execution sequence.
+- `test/test_coverage_route.cpp`: Isabey route-length/transit bounds, all original
+  swaths/rings retained inside the cut, sampled segment containment and obstacle checks,
+  exact deterministic replay, wider-turn efficiency, and protected ring winding.
+- `test/fixtures/isabey.hpp`: float32 map-frame geometry from the supplied 2026-10-05
+  export; raw outer ring plus ten active obstacles, no pending proposals or dock data.
+- CMake registers `test_coverage_planning`, `test_pivot_joins`, and
+  `test_coverage_route`. Run with `colcon test --packages-select mowgli_coverage
+  --return-code-on-test-failure`. Local standalone replay against real F2C 3.0.0 passes
+  93 tests; it does not exercise the ROS action server or the physical robot.
+
+Narrow-apron tests isolate adjacent row pairs: a full route can now avoid a tight
+omega turn by selecting a wider row. A hole likewise need not force a split if a
+safe continuous connector exists; containment, rather than a minimum split count,
+is the safety acceptance condition. Existing footprint/pivot gates remain tested.
+
 ## Where to look
 
 | Task | Start here |

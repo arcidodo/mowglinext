@@ -29,6 +29,13 @@ type CoveragePath struct {
 	Path                      nav.Path                       `json:"path"`
 }
 
+// CoveragePlanPreview matches mowgli_interfaces/msg/CoveragePlanPreview.
+type CoveragePlanPreview struct {
+	Header                    geometry.Header                `json:"header"`
+	Xy                        []float32                      `json:"xy"`
+	SubpathOffsets            []uint32                       `json:"subpath_offsets"`
+}
+
 // CoverageSession matches mowgli_interfaces/msg/CoverageSession.
 type CoverageSession struct {
 	SessionActive             bool                           `json:"session_active"`
@@ -243,6 +250,17 @@ type Power struct {
 	ChargeCurrent             float32                        `json:"charge_current"`
 	ChargerEnabled            bool                           `json:"charger_enabled"`
 	ChargerStatus             string                         `json:"charger_status"`
+}
+
+// RecordedAreaPolygon matches mowgli_interfaces/msg/RecordedAreaPolygon.
+type RecordedAreaPolygon struct {
+	Area                      geometry.Polygon               `json:"area"`
+}
+
+// RecordedAreaPolygonArray matches mowgli_interfaces/msg/RecordedAreaPolygonArray.
+type RecordedAreaPolygonArray struct {
+	Header                    geometry.Header                `json:"header"`
+	Areas                     []RecordedAreaPolygon          `json:"areas"`
 }
 
 // Status matches mowgli_interfaces/msg/Status.

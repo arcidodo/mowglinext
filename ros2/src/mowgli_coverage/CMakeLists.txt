@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.22.1)
 project(mowgli_coverage)
 
 if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
@@ -145,6 +145,13 @@ if(BUILD_TESTING)
   )
   set_target_properties(test_pivot_joins PROPERTIES
     INSTALL_RPATH "/opt/fields2cover-300/lib"
+  )
+
+  # Route efficiency, full exported-map geometry and ring-winding preservation.
+  ament_add_gtest(test_coverage_route test/test_coverage_route.cpp)
+  target_link_libraries(test_coverage_route
+    ${PROJECT_NAME}_core
+    Fields2Cover::Fields2Cover
   )
 endif()
 

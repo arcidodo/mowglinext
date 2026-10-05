@@ -68,8 +68,26 @@
 //      An operator-drawn line (mowgli_map's LidarIgnoreCorridorEntry,
 //      streamed on /mowgli/lidar_ignore_corridors) marks a stretch — e.g. a
 //      hedge the recorded boundary intentionally runs along — where LiDAR
-//      returns within width_m/2 of the line should stop being treated as an
-//      obstacle. Unlike the two filters above, this one is applied to BOTH
+//      returns should stop being treated as an obstacle. Whether a beam
+//      endpoint is suppressed depends on which side of the RECORDED AREA
+//      polygon it falls in (/mowgli/recorded_area_polygons,
+//      RecordedAreaPolygonArray.msg — NEVER on which side of the drawn LINE
+//      it falls, so a sloppily-drawn line can never blind a beam that is
+//      genuinely still inside a recorded area):
+//        - INSIDE a recorded (working or navigation) area: suppressed when
+//          within width_m of the line (point_within_corridor) — the
+//          operator's width_m honoured IN FULL, not halved.
+//        - OUTSIDE every recorded area: suppressed whenever it falls
+//          alongside the line's own span, at ANY distance
+//          (point_projects_onto_corridor) — no width limit at all, because
+//          nothing out there is ever reachable by the robot in the first
+//          place, so there is nothing a distance bound would protect.
+//      This mirrors the field learning in wiki/LiDAR-Ignore-Lines.md that
+//      what actually matters is overhanging foliage reaching INTO the mowed
+//      area, not the hedge's own footprint — and that the corridor's real
+//      value is entirely on the area side; the far side was never
+//      load-bearing for anything a width limit could meaningfully protect.
+//      Unlike the two filters above, this one is applied to BOTH
 //      /scan_costmap AND /scan_collision: a deliberate, explicit operator
 //      choice (confirmed 2026-09-25) that a drawn corridor can make
 //      collision_monitor's near-field hard stop blind too, not just
@@ -82,7 +100,9 @@
 //      detector trusts) to project each beam; a stale pose falls back to
 //      pass-through, same rule as the ground filter's stale-IMU case — never
 //      silently suppress LiDAR near a corridor while the robot doesn't know
-//      where it actually is.
+//      where it actually is. A recorded-area list that hasn't arrived yet
+//      (or is genuinely empty) behaves the same way: point_in_any_area can
+//      only ever return false, so the filter is a no-op rather than a guess.
 
 #include <algorithm>
 #include <chrono>
@@ -95,6 +115,7 @@
 #include <vector>
 
 #include "mowgli_interfaces/msg/lidar_ignore_corridor_array.hpp"
+#include "mowgli_interfaces/msg/recorded_area_polygon_array.hpp"
 #include "mowgli_interfaces/msg/status.hpp"
 #include "mowgli_localization/gravity_estimator.hpp"
 #include "nav_msgs/msg/odometry.hpp"
@@ -155,6 +176,11 @@ public:
     const std::string corridors_topic =
         declare_parameter<std::string>("lidar_ignore_corridors_topic",
                                        "/mowgli/lidar_ignore_corridors");
+    // See the file header comment, item 3: restricts a corridor's reach to
+    // the side of the drawn line that overlaps a recorded area.
+    const std::string recorded_areas_topic =
+        declare_parameter<std::string>("recorded_area_polygons_topic",
+                                       "/mowgli/recorded_area_polygons");
     const std::string odom_topic =
         declare_parameter<std::string>("odometry_topic", "/odometry/filtered_map");
 
@@ -205,6 +231,14 @@ public:
         [this](mowgli_interfaces::msg::LidarIgnoreCorridorArray::ConstSharedPtr msg)
         {
           on_corridors(*msg);
+        });
+
+    sub_recorded_areas_ = create_subscription<mowgli_interfaces::msg::RecordedAreaPolygonArray>(
+        recorded_areas_topic,
+        qos_corridors,
+        [this](mowgli_interfaces::msg::RecordedAreaPolygonArray::ConstSharedPtr msg)
+        {
+          on_recorded_areas(*msg);
         });
 
     sub_odom_ = create_subscription<nav_msgs::msg::Odometry>(
@@ -386,11 +420,17 @@ public:
   };
 
   /// One LidarIgnoreCorridor, reduced to what the filter needs: a polyline
-  /// (>= 2 points) and the perpendicular half-width to suppress within.
+  /// (>= 2 points) and the perpendicular reach to suppress within.
   struct Corridor
   {
     std::vector<Point2D> polyline;
-    double half_width_m{0.0};
+    /// Perpendicular distance from the polyline within which a beam
+    /// endpoint is "close enough" — the FULL width_m the operator entered,
+    /// not halved (see on_corridors and the file header comment, item 3):
+    /// apply_corridor_ignore_filter also requires the point to land inside
+    /// a recorded area, so in practice this only ever matters on the
+    /// lawn/area side of the drawn line.
+    double reach_m{0.0};
   };
 
   /// LIDAR mount geometry relative to base_link — same lidar_x/lidar_y/
@@ -416,7 +456,7 @@ public:
     return std::hypot(px - (a.x + t * dx), py - (a.y + t * dy));
   }
 
-  /// True if (px, py) is within `corridor`'s half_width_m of ANY of its
+  /// True if (px, py) is within `corridor`'s reach_m of ANY of its
   /// segments. A corridor with fewer than 2 points is degenerate and never
   /// matches (map_server_node already rejects one on add, but a filter
   /// consuming a stale/malformed message must not misbehave on it either).
@@ -427,34 +467,133 @@ public:
     for (std::size_t i = 0; i + 1 < corridor.polyline.size(); ++i)
     {
       if (distance_point_to_segment(px, py, corridor.polyline[i], corridor.polyline[i + 1]) <=
-          corridor.half_width_m)
+          corridor.reach_m)
         return true;
     }
     return false;
   }
 
+  /// True if the perpendicular FOOT of (px, py) onto segment [a, b] falls
+  /// strictly between a and b (t in [0, 1]) — i.e. (px, py) is somewhere
+  /// alongside the segment's own span, not off past either endpoint.
+  /// Distance-INDEPENDENT on purpose: see point_projects_onto_corridor.
+  static bool point_projects_onto_segment(double px, double py, const Point2D& a, const Point2D& b)
+  {
+    const double dx = b.x - a.x;
+    const double dy = b.y - a.y;
+    const double len2 = dx * dx + dy * dy;
+    if (len2 < 1e-12)
+      return false;  // degenerate (zero-length) segment: no span to fall alongside.
+    const double t = ((px - a.x) * dx + (py - a.y) * dy) / len2;
+    return t >= 0.0 && t <= 1.0;
+  }
+
+  /// True if (px, py) falls alongside ANY segment of `corridor` — same shape
+  /// as point_within_corridor, but with NO perpendicular-distance limit.
+  /// This is the "beyond the recorded boundary" half of item 3's rule: a
+  /// beam that lands outside every recorded area is suppressed whenever it
+  /// is anywhere alongside the drawn line's span, at ANY distance, because
+  /// nothing outside a recorded area is ever reachable by the robot anyway —
+  /// unlike the area-side reach_m limit, an unbounded far side costs nothing
+  /// in real collision-avoidance capability, and removes width_m entirely as
+  /// a knob the operator has to also get right for the side of the line that
+  /// was never load-bearing in the first place.
+  static bool point_projects_onto_corridor(double px, double py, const Corridor& corridor)
+  {
+    if (corridor.polyline.size() < 2)
+      return false;
+    for (std::size_t i = 0; i + 1 < corridor.polyline.size(); ++i)
+    {
+      if (point_projects_onto_segment(px, py, corridor.polyline[i], corridor.polyline[i + 1]))
+        return true;
+    }
+    return false;
+  }
+
+  /// True if (px, py) is inside the polygon `ring` — standard even-odd
+  /// ray-casting, with an IMPLICIT closing edge between the last and first
+  /// point (an explicit repeated first-as-last point is harmless). A ring
+  /// with fewer than 3 points is degenerate and never contains anything.
+  static bool point_in_polygon(double px, double py, const std::vector<Point2D>& ring)
+  {
+    if (ring.size() < 3)
+      return false;
+    bool inside = false;
+    for (std::size_t i = 0, j = ring.size() - 1; i < ring.size(); j = i++)
+    {
+      const Point2D& pi = ring[i];
+      const Point2D& pj = ring[j];
+      if ((pi.y > py) == (pj.y > py))
+        continue;
+      const double x_at_py = pi.x + (py - pi.y) * (pj.x - pi.x) / (pj.y - pi.y);
+      if (px < x_at_py)
+        inside = !inside;
+    }
+    return inside;
+  }
+
+  /// True if (px, py) falls inside ANY of the given recorded-area rings —
+  /// the corridor filter's area-side restriction (file header comment,
+  /// item 3). Each area's OUTER ring only: an obstacle hole inside a
+  /// recorded area is NOT subtracted, so a beam landing inside a mapped
+  /// obstacle that also happens to be within a corridor's reach is still
+  /// "on the area side" — a known, accepted simplification (see
+  /// RecordedAreaPolygonArray.msg).
+  static bool point_in_any_area(double px,
+                                double py,
+                                const std::vector<std::vector<Point2D>>& areas)
+  {
+    for (const auto& ring : areas)
+    {
+      if (point_in_polygon(px, py, ring))
+        return true;
+    }
+    return false;
+  }
+
+  /// Result of apply_corridor_ignore_filter — split by WHICH of the two
+  /// rules (item 3) actually suppressed a beam, so field debugging doesn't
+  /// have to reason about it by hand.
+  struct CorridorFilterStats
+  {
+    std::size_t suppressed{0};
+    /// Subset of `suppressed`: inside a recorded area, within reach_m.
+    std::size_t suppressed_area_side{0};
+    /// Subset of `suppressed`: outside every recorded area, alongside a
+    /// corridor's span at any distance (the robot can never be there).
+    std::size_t suppressed_beyond_boundary{0};
+  };
+
   /// Apply the corridor-ignore filter to @p io in place: for each finite
   /// beam, project its map-frame endpoint (LIDAR mount extrinsics + the
-  /// robot's current pose) and push the range to +inf if that point falls
-  /// within any corridor. SAFETY: called on BOTH the /scan_costmap and
-  /// /scan_collision paths (see the file header comment, item 3) — this is
-  /// the one filter in this node not restricted to the costmap-only path,
-  /// by explicit operator choice.
+  /// robot's current pose) and push the range to +inf per item 3's two
+  /// rules — INSIDE a recorded area, within reach_m of a corridor; OUTSIDE
+  /// every recorded area, alongside a corridor's span at ANY distance
+  /// (nothing there is ever reachable by the robot, so there is nothing to
+  /// bound). Which rule applies is decided ONLY by the true recorded-area
+  /// polygon (point_in_any_area), never by which side of the drawn LINE a
+  /// point falls on — so a sloppily-drawn line can never blind a beam that
+  /// is genuinely still inside a recorded area; it can only under- or
+  /// over-reach on the side where the robot is never physically present.
+  /// SAFETY: called on BOTH the /scan_costmap and /scan_collision paths —
+  /// this is the one filter in this node not restricted to the
+  /// costmap-only path, by explicit operator choice.
   ///
   /// `robot_pose_map` is std::nullopt when no fresh pose exists (stale or
   /// never received) — the function is then a no-op, same rule as
   /// apply_ground_filter's stale-IMU case: better to keep seeing a corridor's
   /// hedge than to silently blind the robot near one while it doesn't
   /// actually know where it is.
-  /// Returns how many beams were suppressed (0 when it was a no-op).
-  static std::size_t apply_corridor_ignore_filter(sensor_msgs::msg::LaserScan& io,
-                                                  const std::vector<Corridor>& corridors,
-                                                  const std::optional<Pose2D>& robot_pose_map,
-                                                  const LidarExtrinsics& extrinsics)
+  static CorridorFilterStats apply_corridor_ignore_filter(
+      sensor_msgs::msg::LaserScan& io,
+      const std::vector<Corridor>& corridors,
+      const std::vector<std::vector<Point2D>>& recorded_areas,
+      const std::optional<Pose2D>& robot_pose_map,
+      const LidarExtrinsics& extrinsics)
   {
+    CorridorFilterStats stats;
     if (corridors.empty() || !robot_pose_map.has_value())
-      return 0;
-    std::size_t suppressed = 0;
+      return stats;
     const Pose2D& pose = *robot_pose_map;
     const float inf = std::numeric_limits<float>::infinity();
     const double a0 = io.angle_min;
@@ -481,17 +620,40 @@ public:
       const double px = lidar_map_x + static_cast<double>(r) * std::cos(psi);
       const double py = lidar_map_y + static_cast<double>(r) * std::sin(psi);
 
-      for (const auto& corridor : corridors)
+      const bool inside_area = point_in_any_area(px, py, recorded_areas);
+      bool matched = false;
+      if (inside_area)
       {
-        if (point_within_corridor(px, py, corridor))
+        for (const auto& corridor : corridors)
         {
-          r = inf;
-          ++suppressed;
-          break;
+          if (point_within_corridor(px, py, corridor))
+          {
+            matched = true;
+            break;
+          }
         }
       }
+      else
+      {
+        for (const auto& corridor : corridors)
+        {
+          if (point_projects_onto_corridor(px, py, corridor))
+          {
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (!matched)
+        continue;
+      r = inf;
+      ++stats.suppressed;
+      if (inside_area)
+        ++stats.suppressed_area_side;
+      else
+        ++stats.suppressed_beyond_boundary;
     }
-    return suppressed;
+    return stats;
   }
 
   /// Smallest distance from (px, py) to any corridor polyline; +inf if none.
@@ -573,7 +735,7 @@ private:
     for (const auto& c : msg.corridors)
     {
       Corridor corridor;
-      corridor.half_width_m = 0.5 * c.width_m;
+      corridor.reach_m = c.width_m;
       corridor.polyline.reserve(c.polyline.points.size());
       for (const auto& pt : c.polyline.points)
       {
@@ -583,6 +745,22 @@ private:
     }
     RCLCPP_INFO(get_logger(), "LiDAR-ignore corridors updated: %zu", corridors.size());
     last_corridors_ = std::move(corridors);
+  }
+
+  void on_recorded_areas(const mowgli_interfaces::msg::RecordedAreaPolygonArray& msg)
+  {
+    std::vector<std::vector<Point2D>> areas;
+    areas.reserve(msg.areas.size());
+    for (const auto& a : msg.areas)
+    {
+      std::vector<Point2D> ring;
+      ring.reserve(a.area.points.size());
+      for (const auto& pt : a.area.points)
+        ring.push_back(Point2D{static_cast<double>(pt.x), static_cast<double>(pt.y)});
+      areas.push_back(std::move(ring));
+    }
+    RCLCPP_INFO(get_logger(), "Recorded area polygons updated: %zu", areas.size());
+    last_recorded_areas_ = std::move(areas);
   }
 
   void on_odom(const nav_msgs::msg::Odometry& msg)
@@ -629,27 +807,33 @@ private:
                              corridor_pose_max_age_s_);
       }
     }
-    const std::size_t corridor_suppressed =
+    const CorridorFilterStats corridor_stats =
         apply_corridor_ignore_filter(out,
                                      last_corridors_,
+                                     last_recorded_areas_,
                                      pose_for_corridor_filter,
                                      LidarExtrinsics{lidar_x_m_, lidar_y_m_, lidar_mount_yaw_});
     if (pose_for_corridor_filter.has_value())
     {
-      // Throttled diagnostics: is the robot near a drawn line, and did the
-      // filter actually drop any beams? (field 2026-09-25: no way to tell.)
+      // Throttled diagnostics: is the robot near a drawn line, and which of
+      // item 3's two rules is doing the suppressing — reach_m-limited on
+      // the area side, or unconditional beyond the recorded boundary (field
+      // 2026-09-25/2026-09-27/2026-09-28: no way to tell any of this apart
+      // before this)?
       RCLCPP_INFO_THROTTLE(
           get_logger(),
           *get_clock(),
           5000,
           "corridor filter: robot (%.2f, %.2f) is %.2f m from the nearest line, %zu beam(s) "
-          "suppressed this scan",
+          "suppressed this scan (%zu area-side within reach, %zu beyond the recorded boundary)",
           pose_for_corridor_filter->x,
           pose_for_corridor_filter->y,
           distance_to_nearest_corridor(pose_for_corridor_filter->x,
                                        pose_for_corridor_filter->y,
                                        last_corridors_),
-          corridor_suppressed);
+          corridor_stats.suppressed,
+          corridor_stats.suppressed_area_side,
+          corridor_stats.suppressed_beyond_boundary);
     }
 
     // SAFETY: collision_monitor gets the scan with chassis/dock self-returns
@@ -717,6 +901,8 @@ private:
   rclcpp::Subscription<mowgli_interfaces::msg::Status>::SharedPtr sub_status_;
   rclcpp::Subscription<sensor_msgs::msg::Imu>::SharedPtr sub_imu_;
   rclcpp::Subscription<mowgli_interfaces::msg::LidarIgnoreCorridorArray>::SharedPtr sub_corridors_;
+  rclcpp::Subscription<mowgli_interfaces::msg::RecordedAreaPolygonArray>::SharedPtr
+      sub_recorded_areas_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_odom_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pub_scan_;
   rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr pub_collision_scan_;
@@ -758,6 +944,12 @@ private:
   /// the first message (transient_local, so that arrives promptly) or if the
   /// operator has drawn none — the filter is then a cheap no-op.
   std::vector<Corridor> last_corridors_;
+  /// Latest recorded (working + navigation) area outer boundaries from
+  /// /mowgli/recorded_area_polygons — see point_in_any_area and the file
+  /// header comment, item 3. Empty until the first message or if no area is
+  /// recorded yet; apply_corridor_ignore_filter then suppresses nothing,
+  /// same "no guessing" rule as an empty corridor list.
+  std::vector<std::vector<Point2D>> last_recorded_areas_;
   /// Latest fused pose from /odometry/filtered_map, freshness-gated by
   /// corridor_pose_max_age_s_ at use (on_scan), same pattern as
   /// last_up_in_imu_/last_imu_stamp_ above.

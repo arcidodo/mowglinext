@@ -24,7 +24,7 @@
 #include <string>
 #include <vector>
 
-#include "ament_index_cpp/get_package_share_directory.hpp"
+#include "ament_index_cpp/get_package_share_path.hpp"
 #include "behaviortree_cpp/behavior_tree.h"
 #include "behaviortree_cpp/loggers/bt_cout_logger.h"
 #include "geometry_msgs/msg/twist_stamped.hpp"
@@ -1151,9 +1151,8 @@ private:
     {
       try
       {
-        const std::string pkg_share =
-            ament_index_cpp::get_package_share_directory("mowgli_behavior");
-        tree_file = pkg_share + "/trees/main_tree.xml";
+        const auto pkg_share = ament_index_cpp::get_package_share_path("mowgli_behavior");
+        tree_file = (pkg_share / "trees" / "main_tree.xml").string();
       }
       catch (const std::exception& ex)
       {
@@ -1535,9 +1534,9 @@ private:
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr replan_needed_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr boundary_violation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr lethal_boundary_violation_sub_;
+  rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr area_list_generation_sub_;
   rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr dig_escalated_sub_;
   rclcpp::Subscription<mowgli_interfaces::msg::DigEvent>::SharedPtr dig_event_sub_;
-  rclcpp::Subscription<std_msgs::msg::UInt64>::SharedPtr area_list_generation_sub_;
   rclcpp::Subscription<nav_msgs::msg::OccupancyGrid>::SharedPtr mow_progress_sub_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr fused_odom_sub_;
   // LocalizationGuard state. Both feeds write loc_obs_ under

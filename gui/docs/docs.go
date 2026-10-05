@@ -896,6 +896,12 @@ const docTemplate = `{
                         "schema": {
                             "$ref": "#/definitions/api.ErrorResponse"
                         }
+                    },
+                    "409": {
+                        "description": "Conflict",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
                     }
                 }
             }
@@ -946,6 +952,12 @@ const docTemplate = `{
                     },
                     "404": {
                         "description": "Not Found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ErrorResponse"
+                        }
+                    },
+                    "409": {
+                        "description": "Conflict",
                         "schema": {
                             "$ref": "#/definitions/api.ErrorResponse"
                         }
@@ -2023,8 +2035,12 @@ const docTemplate = `{
         "api.Schedule": {
             "type": "object",
             "properties": {
-                "area": {
+                "areaId": {
+                    "description": "AreaID is the STABLE map area id (MapArea.id) this schedule mows; 0 means\nevery area (a plain Start). The scheduler resolves it to the current\npositional index when the schedule fires. AreaName is a display snapshot\nso the GUI and MQTT consumers can label it, even if the area was removed.",
                     "type": "integer"
+                },
+                "areaName": {
+                    "type": "string"
                 },
                 "createdAt": {
                     "type": "string"

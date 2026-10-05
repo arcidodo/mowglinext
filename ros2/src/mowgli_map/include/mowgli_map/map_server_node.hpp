@@ -57,6 +57,7 @@
 #include <mowgli_interfaces/msg/lidar_ignore_corridor_array.hpp>
 #include <mowgli_interfaces/msg/map_obstacle_info.hpp>
 #include <mowgli_interfaces/msg/obstacle_array.hpp>
+#include <mowgli_interfaces/msg/recorded_area_polygon_array.hpp>
 #include <mowgli_interfaces/msg/status.hpp>
 #include <mowgli_interfaces/srv/add_lidar_ignore_corridor.hpp>
 #include <mowgli_interfaces/srv/add_mowing_area.hpp>
@@ -235,6 +236,9 @@ public:
 
   /// Test-only: round-trip persistence through save/load_areas_to_file.
   void save_areas_for_test(const std::string& path);
+  /// Same write as an implicit save (add_area, ignore-line edit): throws if it would replace
+  /// a file with areas by an empty map.
+  void save_areas_guarded_for_test(const std::string& path);
   void load_areas_for_test(const std::string& path);
 
   /// Test-only: current area-list generation (mowglinext#637 phase 2).
@@ -413,7 +417,7 @@ private:
     geometry_msgs::msg::Polygon polyline;
     /// Clamped to [kMinLidarIgnoreCorridorWidthM, kMaxLidarIgnoreCorridorWidthM]
     /// on add — see on_add_lidar_ignore_corridor.
-    double width_m{0.20};
+    double width_m{0.40};
     /// Same stable-id contract as AreaEntry::id, tracked by
     /// next_lidar_corridor_id_.
     uint32_t id{0};
@@ -426,7 +430,7 @@ private:
   /// Independent of, and does not weaken, the operator's own choice to let a
   /// corridor affect collision_monitor at all.
   static constexpr double kMinLidarIgnoreCorridorWidthM = 0.05;
-  static constexpr double kMaxLidarIgnoreCorridorWidthM = 1.0;
+  static constexpr double kMaxLidarIgnoreCorridorWidthM = 1.2;
 
   // ── ROS callbacks ────────────────────────────────────────────────────────
 
@@ -530,6 +534,15 @@ private:
   /// (transient_local) — called after every add/clear/load, so a late
   /// subscriber always has the current list.
   void publish_lidar_ignore_corridors();
+
+  /// Republish every recorded (working + navigation) area's outer boundary
+  /// on recorded_area_polygons_pub_ (transient_local) — called after every
+  /// area-list change (add/clear/load/datum migration), same shape as
+  /// publish_lidar_ignore_corridors. Consumed by costmap_scan_filter_node's
+  /// LiDAR-ignore-corridor area-side restriction; defined in
+  /// area_manager.cpp (unlike the corridor publish above, this one needs
+  /// direct access to areas_, which area_manager.cpp already owns).
+  void publish_recorded_area_polygons();
 
   /// ~/capture_dock_antenna: average the RAW antenna position while seated on
   /// the dock (charging + RTK gates) and hold it, unpersisted, for the
@@ -710,7 +723,15 @@ private:
   static std::string polygon_to_string(const geometry_msgs::msg::Polygon& poly);
 
   /// Save areas and docking point to a YAML file.
-  void save_areas_to_file(const std::string& path);
+  /// Atomically write the areas file. Unless `allow_empty_overwrite`, REFUSES (throws) to
+  /// replace a file that holds areas by one that holds none: only the explicit save_areas
+  /// service may do that. Every implicit save (add_area, ignore-line edits, the load-time
+  /// re-stamps) runs against whatever is in memory, which is empty between clear_map and
+  /// the first add_area, or after a failed load — writing that out destroyed the operator's
+  /// map and left only the ignore lines. The file being replaced is kept as <path>.bak.
+  void save_areas_to_file(const std::string& path, bool allow_empty_overwrite = false);
+  /// area_count recorded in an areas file, or 0 when it is missing/unreadable.
+  static int count_areas_in_file(const std::string& path);
 
   /// fsync `tmp_path`, rename it over `path`, fsync the directory. Throws (and
   /// removes the temp file) if the data cannot be made durable; `path` is then
@@ -880,8 +901,9 @@ private:
   ///
   /// This was a LETHAL band in an earlier version of this change and was
   /// reworked to mid-cost after review: lethal here collides with
-  /// chassis_safety_inset (both default to 0.20 m — the outermost coverage
-  /// ring is planned exactly chassis_safety_inset inside the line, so a
+  /// chassis_safety_inset (the outermost coverage ring is planned exactly
+  /// chassis_safety_inset inside the line — ON it at the 0.0 default, 0.20 m
+  /// until 2026-09-16 — so a
   /// lethal band there plus inflation_radius would swallow the ring itself
   /// and reopen the START_OCCUPIED skip cascade, issue #487) and would also
   /// wall off any area-to-area seam narrower than 2x the inflated margin.
@@ -1246,7 +1268,12 @@ private:
   /// round-trip needed" shape as keepout_mask_pub_.
   rclcpp::Publisher<mowgli_interfaces::msg::LidarIgnoreCorridorArray>::SharedPtr
       lidar_ignore_corridors_pub_;
-
+  /// Full current set of recorded (working + navigation) area outer
+  /// boundaries, transient_local — costmap_scan_filter_node's input for the
+  /// LiDAR-ignore-corridor area-side restriction. Same "always latest, no
+  /// service round-trip" shape as lidar_ignore_corridors_pub_ above.
+  rclcpp::Publisher<mowgli_interfaces::msg::RecordedAreaPolygonArray>::SharedPtr
+      recorded_area_polygons_pub_;
   /// Area-list generation counter (mowglinext#637 phase 2) — see
   /// area_list_generation_'s doc comment. transient_local so a subscriber
   /// started after the last bump (e.g. behavior_tree_node on its own

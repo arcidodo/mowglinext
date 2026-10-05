@@ -449,9 +449,10 @@ std::vector<std::pair<double, double>> buildContinuousPath(
 // connector exists. This includes straight fallbacks between antiparallel
 // swaths: keeping them would hand FTC a zero-radius corner and cause alternating
 // saturated steering commands.
-// Swath pieces are nearest-endpoint chained before joining (identical to the
-// plain serpentine on a convex field; mows each lobe of a concave/hole-split
-// field contiguously so a lobe change costs ONE split, not one per column).
+// Swath pieces are chained by feasible connector length plus a stop/turn
+// penalty for pivot or transit joins. The original first swath remains the seed;
+// all swaths are visited once. This can skip a row for a shorter, wider turn and
+// return for the skipped row later; it never changes the cut geometry.
 // The caller (FollowStrip) drives them in order, bridging every sub-path boundary
 // with a blade-off, costmap-aware Nav2 reposition/reorientation. Sub-paths with
 // fewer than two points are dropped.
@@ -491,6 +492,24 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
     const std::vector<std::pair<double, double>>& swath_turn_boundary = {},
     const PivotJoinLimits& pivot_limits = {});
 
+// Reorders a set of FINISHED, hole-free sub-path polylines (as produced by
+// buildContinuousSubPaths above, which calls this internally) to minimize the
+// total blade-off Nav2 transit between them — trying every sub-path as the
+// starting point, not just the first, and entering every other sub-path from
+// whichever end is nearer. Pure function of the sub-path geometries alone (no
+// robot position), so it stays deterministic: a fixed input always returns
+// the same output, which is what lets the BT resume coverage by sub-path
+// index across re-plans of the same field. See its own doc comment
+// (coverage_planning.cpp) for the full rationale and the O(n^3)
+// kMaxSeedSearchSize bound. Returns the input unchanged (same order and
+// direction) when no reordering would shorten the total transit.
+// The first preserve_direction_count input paths may move in the sequence but
+// may not reverse. The builder protects ALL paths containing headland rings,
+// including obstacle loops; sub-path 0 always retains its historical protection.
+std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTransit(
+    std::vector<std::vector<std::pair<double, double>>> sub_paths,
+    std::size_t preserve_direction_count = 1);
+
 // 2-D point-in-polygon (ray casting) against `ring`, a list of (x, y)
 // vertices. Open or closed ring; winding-independent. Used by the server to
 // VERIFY the plan stays inside the recorded boundary (log-only — the planner
@@ -519,6 +538,14 @@ f2c::types::LinearRing dedupClosedRing(const f2c::types::LinearRing& in);
 // margin < 1e-3 or a degenerate ring falls back to dedupClosedRing(in): the
 // obstacle is never dropped, only the extra margin. Pure function — testable.
 f2c::types::LinearRing bufferRingOutward(const f2c::types::LinearRing& in, double margin);
+
+// Shrink a ring inward by `distance` metres (GDAL Buffer with a negated
+// distance, rounded joins) and return it dedup-closed. Unlike
+// bufferRingOutward, erosion can legitimately collapse a small or thin
+// polygon to nothing — that is reported by returning an EMPTY ring (size 0),
+// which the caller MUST treat as failure, never as "no correction needed".
+// distance <= 0 returns dedupClosedRing(in) unchanged. Pure function.
+f2c::types::LinearRing erodeRingInward(const f2c::types::LinearRing& in, double distance);
 
 }  // namespace mowgli_coverage
 

@@ -25,6 +25,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <limits>
@@ -467,6 +468,7 @@ void MapServerNode::on_clear_map(const std_srvs::srv::Trigger::Request::SharedPt
   res->success = true;
   res->message = "All map layers and areas cleared.";
   RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
+  publish_recorded_area_polygons();
 }
 
 void MapServerNode::on_add_area(const mowgli_interfaces::srv::AddMowingArea::Request::SharedPtr req,
@@ -589,6 +591,7 @@ void MapServerNode::on_add_area(const mowgli_interfaces::srv::AddMowingArea::Req
   }
 
   res->success = true;
+  publish_recorded_area_polygons();
   // mowglinext#637 phase 2: the area list changed (one entry added — this is
   // also how the GUI's clear+re-add edit/delete flow adds every SURVIVING
   // area back, so an untouched area's own re-add counts as a change too, not
@@ -597,6 +600,24 @@ void MapServerNode::on_add_area(const mowgli_interfaces::srv::AddMowingArea::Req
   // tell its cache might now describe a different area, without having to
   // poll or re-probe speculatively.
   bump_area_list_generation();
+}
+
+void MapServerNode::publish_recorded_area_polygons()
+{
+  mowgli_interfaces::msg::RecordedAreaPolygonArray msg;
+  msg.header.stamp = get_clock()->now();
+  msg.header.frame_id = "map";
+  {
+    std::lock_guard<std::mutex> lock(map_mutex_);
+    msg.areas.reserve(areas_.size());
+    for (const auto& area : areas_)
+    {
+      mowgli_interfaces::msg::RecordedAreaPolygon entry;
+      entry.area = area.polygon;
+      msg.areas.push_back(std::move(entry));
+    }
+  }
+  recorded_area_polygons_pub_->publish(msg);
 }
 
 void MapServerNode::bump_area_list_generation()
@@ -944,7 +965,9 @@ void MapServerNode::on_set_docking_point(
   // the EKF to dock_pose at boot via the fusion_graph gauge reset, so a
   // bad calibration leaks straight into the map-frame anchor for every
   // subsequent session. Reject unless ALL conditions hold:
-  //   (1) firmware reports is_charging=true (robot physically on dock)
+  //   (1) firmware reports is_charging=true (robot physically on dock) —
+  //       EXCEPT for a MOTION-sourced call with an explicit (not
+  //       GPS-averaged) position, see below
   //   (2) GPS sample fresh and σ(xy) ≤ dock_set_gps_accuracy_max_m_
   //   (3) EKF yaw converged on the recent rolling window
   // (the two off-dock MOTION writes keep (2) only — see dock_set_gates.hpp)
@@ -1267,7 +1290,7 @@ void MapServerNode::on_save_areas(const std_srvs::srv::Trigger::Request::SharedP
 
   try
   {
-    save_areas_to_file(areas_file_path_);
+    save_areas_to_file(areas_file_path_, /*allow_empty_overwrite=*/true);
     res->success = true;
     res->message = "Areas saved to " + areas_file_path_;
     RCLCPP_INFO(get_logger(), "%s", res->message.c_str());
@@ -1810,7 +1833,28 @@ std::string MapServerNode::polygon_to_string(const geometry_msgs::msg::Polygon& 
   return oss.str();
 }
 
-void MapServerNode::save_areas_to_file(const std::string& path)
+int MapServerNode::count_areas_in_file(const std::string& path)
+{
+  std::ifstream in(path);
+  std::string line;
+  while (std::getline(in, line))
+  {
+    if (line.rfind("area_count:", 0) == 0)
+    {
+      try
+      {
+        return std::max(0, std::stoi(line.substr(std::string("area_count:").size())));
+      }
+      catch (const std::exception&)
+      {
+        return 0;
+      }
+    }
+  }
+  return 0;
+}
+
+void MapServerNode::save_areas_to_file(const std::string& path, bool allow_empty_overwrite)
 {
   // Write a sibling temp file, flush it to the medium, then rename it over the
   // target. Opening `path` directly truncates the ONLY copy of the operator's
@@ -1922,6 +1966,27 @@ void MapServerNode::save_areas_to_file(const std::string& path)
   {
     std::remove(tmp_path.c_str());
     throw std::runtime_error("Writing " + tmp_path + " failed (disk full?)");
+  }
+
+  const int on_disk = count_areas_in_file(path);
+  if (areas_.empty() && on_disk > 0 && !allow_empty_overwrite)
+  {
+    std::remove(tmp_path.c_str());
+    throw std::runtime_error("refusing to replace " + path + " (" + std::to_string(on_disk) +
+                             " area(s)) by an empty map; only an explicit save_areas may");
+  }
+  if (on_disk > 0)
+  {
+    // Keep the version being replaced. Best effort: a failed copy must not block the save.
+    std::error_code ec;
+    std::filesystem::copy_file(path,
+                               path + ".bak",
+                               std::filesystem::copy_options::overwrite_existing,
+                               ec);
+    if (ec)
+    {
+      RCLCPP_WARN(get_logger(), "Could not keep %s.bak: %s", path.c_str(), ec.message().c_str());
+    }
   }
   commit_file_atomically(tmp_path, path);
 }
@@ -2045,7 +2110,7 @@ void MapServerNode::load_areas_from_file(const std::string& path)
     LidarIgnoreCorridorEntry entry;
     entry.name = get_str(prefix + "_name");
     entry.polyline = std::move(polyline);
-    entry.width_m = std::clamp(get_double(prefix + "_width_m", 0.20),
+    entry.width_m = std::clamp(get_double(prefix + "_width_m", 0.40),
                                kMinLidarIgnoreCorridorWidthM,
                                kMaxLidarIgnoreCorridorWidthM);
     entry.id = static_cast<uint32_t>(get_int(prefix + "_id", 0));
@@ -2129,6 +2194,7 @@ void MapServerNode::load_areas_from_file(const std::string& path)
   // — a redundant publish is a no-op for subscribers); unconditional so a
   // load with no migration still announces the loaded corridor list.
   publish_lidar_ignore_corridors();
+  publish_recorded_area_polygons();
 }
 
 void MapServerNode::migrate_areas_datum(double file_datum_lat,
@@ -2268,6 +2334,7 @@ void MapServerNode::migrate_areas_datum(double file_datum_lat,
   }
 
   publish_lidar_ignore_corridors();
+  publish_recorded_area_polygons();
 
   RCLCPP_WARN(get_logger(),
               "Datum changed (%.9f, %.9f) → (%.9f, %.9f): re-projected %zu area(s), "
@@ -2387,6 +2454,11 @@ void MapServerNode::get_mowing_area_for_test(
 }
 
 void MapServerNode::save_areas_for_test(const std::string& path)
+{
+  save_areas_to_file(path, /*allow_empty_overwrite=*/true);
+}
+
+void MapServerNode::save_areas_guarded_for_test(const std::string& path)
 {
   save_areas_to_file(path);
 }
