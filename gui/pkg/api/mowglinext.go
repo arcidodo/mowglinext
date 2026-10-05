@@ -716,6 +716,63 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				c.JSON(200, previewRes)
 				return
 			}
+		case "preview_coverage":
+			// Read-only dry run of coverage_server's planner for the Map page's
+			// "mowing lines" overlay: the same planBoustrophedon call a real
+			// PlanCoverage goal makes, but with the swath angle and perimeter
+			// winding taken from the request so the operator can try a value
+			// before saving it. Omitted angle/direction mean "auto" / "the live
+			// ring_direction parameter" — NOT 0, which is a real choice (0 deg,
+			// planner-default winding) — hence the pointers.
+			var previewReq struct {
+				OuterBoundary geometry.Polygon   `json:"outer_boundary"`
+				Obstacles     []geometry.Polygon `json:"obstacles"`
+				MowAngleDeg   *float64           `json:"mow_angle_deg"`
+				Perpendicular bool               `json:"perpendicular"`
+				RingDirection *int32             `json:"ring_direction"`
+			}
+			if err = c.BindJSON(&previewReq); err != nil {
+				c.JSON(400, ErrorResponse{Error: err.Error()})
+				return
+			}
+			if len(previewReq.OuterBoundary.Points) < 3 {
+				c.JSON(400, ErrorResponse{Error: "outer_boundary needs at least 3 points"})
+				return
+			}
+			if previewReq.Obstacles == nil {
+				previewReq.Obstacles = []geometry.Polygon{}
+			}
+			previewCall := mowgli.PreviewCoverageReq{
+				OuterBoundary: previewReq.OuterBoundary,
+				Obstacles:     previewReq.Obstacles,
+				MowAngleDeg:   -1,
+				Perpendicular: previewReq.Perpendicular,
+				RingDirection: -1,
+			}
+			if previewReq.MowAngleDeg != nil {
+				previewCall.MowAngleDeg = *previewReq.MowAngleDeg
+			}
+			if previewReq.RingDirection != nil {
+				previewCall.RingDirection = *previewReq.RingDirection
+			}
+			var previewRes mowgli.PreviewCoverageRes
+			err = provider.CallService(ctx,
+				"/coverage_server/preview_coverage",
+				&previewCall,
+				&previewRes,
+				"mowgli_interfaces/srv/PreviewCoverage")
+			if err == nil {
+				if previewRes.Rings == nil {
+					previewRes.Rings = []geometry.Polygon{}
+				}
+				if previewRes.Swaths == nil {
+					previewRes.Swaths = []geometry.Polygon{}
+				}
+				// A planner refusal (field too small, bad direction) is a normal
+				// answer, not a transport error: the overlay shows its message.
+				c.JSON(200, previewRes)
+				return
+			}
 		case "correct_recorded_obstacle":
 			// One-shot: shrinks a polygon recorded by driving the chassis edge
 			// around an object by the raw chassis half-width (coverage_server's

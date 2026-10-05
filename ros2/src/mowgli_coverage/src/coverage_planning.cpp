@@ -2890,4 +2890,102 @@ f2c::types::LinearRing dedupClosedRing(const f2c::types::LinearRing& in)
   return makeRingValid(out);
 }
 
+namespace
+{
+// Douglas-Peucker over indices [lo, hi] of `pts`, marking the vertices to keep.
+// Iterative (explicit stack): a densified ring has thousands of vertices and a
+// pathological one must not be able to blow the call stack.
+void markKeptVertices(const std::vector<std::pair<double, double>>& pts,
+                      double tolerance,
+                      std::vector<bool>& keep)
+{
+  std::vector<std::pair<std::size_t, std::size_t>> stack;
+  stack.emplace_back(0, pts.size() - 1);
+  while (!stack.empty())
+  {
+    const auto [lo, hi] = stack.back();
+    stack.pop_back();
+    if (hi <= lo + 1)
+    {
+      continue;
+    }
+    const double ax = pts[lo].first, ay = pts[lo].second;
+    const double dx = pts[hi].first - ax, dy = pts[hi].second - ay;
+    const double len2 = dx * dx + dy * dy;
+    double worst = -1.0;
+    std::size_t worst_i = lo;
+    for (std::size_t i = lo + 1; i < hi; ++i)
+    {
+      const double px = pts[i].first - ax, py = pts[i].second - ay;
+      // Distance to the chord's LINE; to the anchor itself when the chord has no
+      // length (a closed loop's first and last vertex coincide).
+      const double dist =
+          (len2 < 1e-12) ? std::hypot(px, py) : std::abs(px * dy - py * dx) / std::sqrt(len2);
+      if (dist > worst)
+      {
+        worst = dist;
+        worst_i = i;
+      }
+    }
+    if (worst > tolerance)
+    {
+      keep[worst_i] = true;
+      stack.emplace_back(lo, worst_i);
+      stack.emplace_back(worst_i, hi);
+    }
+  }
+}
+
+std::vector<std::pair<double, double>> simplifyPolyline(
+    const std::vector<std::pair<double, double>>& pts, double tolerance)
+{
+  if (pts.size() <= 2 || tolerance <= 0.0)
+  {
+    return pts;
+  }
+  std::vector<bool> keep(pts.size(), false);
+  keep.front() = true;  // endpoints are always kept: a ring keeps its start and closure
+  keep.back() = true;
+  markKeptVertices(pts, tolerance, keep);
+  std::vector<std::pair<double, double>> out;
+  for (std::size_t i = 0; i < pts.size(); ++i)
+  {
+    if (keep[i])
+    {
+      out.push_back(pts[i]);
+    }
+  }
+  return out;
+}
+}  // namespace
+
+CoveragePreview summarisePlanForPreview(const BoustrophedonPlan& plan, double simplify_tolerance_m)
+{
+  CoveragePreview preview;
+  preview.rings.reserve(plan.rings.size());
+  for (const auto& loop : plan.rings)
+  {
+    auto simplified = simplifyPolyline(loop, simplify_tolerance_m);
+    if (simplified.size() >= 2)
+    {
+      preview.rings.push_back(std::move(simplified));
+    }
+  }
+  preview.swaths = plan.swaths;
+
+  // Heading in [0, 180): a swath has no sense of direction, and serpentine order
+  // alternates it anyway, so 200 degrees and 20 degrees are the same lines.
+  double deg = std::fmod(plan.swath_angle_rad * 180.0 / M_PI, 180.0);
+  if (deg < 0.0)
+  {
+    deg += 180.0;
+  }
+  preview.swath_angle_deg = deg;
+  preview.headland_passes = plan.n_headland_passes;
+  preview.planned_fraction = plan.diagnostics.planned_fraction;
+  preview.field_area_m2 = plan.diagnostics.field_area;
+  preview.dropped_pieces = plan.diagnostics.drops.size();
+  return preview;
+}
+
 }  // namespace mowgli_coverage
