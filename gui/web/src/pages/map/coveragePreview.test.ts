@@ -4,6 +4,7 @@ import {
     buildPreviewLayers,
     choicesFromArea,
     effectiveAngleDeg,
+    nearestOnPolyline,
     overridesFromChoices,
     requestedValues,
     ringToRosPolygon,
@@ -31,6 +32,17 @@ describe("buildPreviewLayers", () => {
         expect(coords).toHaveLength(5);
         expect(coords[0]).toEqual(coords[4]);
         expect(startLonLat).toEqual(coords[0]);
+    });
+
+    it("hands back the outermost ring, and only that one, for the start marker to slide along", () => {
+        const res: CoveragePreviewResult = {success: true, rings: [square(10), square(9)], swaths: []};
+        const {outerRingLonLat, lines} = buildPreviewLayers(res, datum, 0, 0);
+        const first = lines.features.find((f) => f.properties?.kind === "ring" && f.properties?.index === 0)!;
+        expect(outerRingLonLat).toEqual((first.geometry as GeoJSON.LineString).coordinates);
+        expect(outerRingLonLat).toHaveLength(5);
+        // No rings (rings off): nothing to slide along.
+        expect(buildPreviewLayers({success: true, rings: [], swaths: [{points: [{x: 0, y: 0}, {x: 5, y: 0}]}]}, datum, 0, 0).outerRingLonLat).toBeNull();
+        expect(buildPreviewLayers(undefined, datum, 0, 0).outerRingLonLat).toBeNull();
     });
 
     it("points ring arrows along the drive direction", () => {
@@ -245,5 +257,44 @@ describe("per-area choices", () => {
         expect(sameChoices(a, {...follow, start: {x: 1, y: 2.5}})).toBe(false);
         expect(sameChoices(a, follow)).toBe(false);
         expect(sameChoices(follow, follow)).toBe(true);
+    });
+});
+
+describe("nearestOnPolyline", () => {
+    // 5 m east-west at lat 52, then 5 m north.
+    const lon = (m: number) => 5 + m / (Math.cos((52 * Math.PI) / 180) * 111319.49);
+    const lat = (m: number) => 52 + m / 111319.49;
+    const line: [number, number][] = [[lon(0), lat(0)], [lon(5), lat(0)], [lon(5), lat(5)]];
+
+    it("returns the foot of the perpendicular on the nearest segment", () => {
+        const [x, y] = nearestOnPolyline(line, [lon(2), lat(-3)]);
+        expect(x).toBeCloseTo(lon(2), 9);
+        expect(y).toBeCloseTo(lat(0), 9);
+    });
+
+    it("clamps to the ends of the line", () => {
+        const before = nearestOnPolyline(line, [lon(-4), lat(1)]);
+        expect(before[0]).toBeCloseTo(lon(0), 9);
+        expect(before[1]).toBeCloseTo(lat(0), 9);
+        const after = nearestOnPolyline(line, [lon(5), lat(9)]);
+        expect(after[1]).toBeCloseTo(lat(5), 9);
+    });
+
+    it("picks the nearer of two segments at a bend", () => {
+        const [x, y] = nearestOnPolyline(line, [lon(6), lat(3)]);
+        expect(x).toBeCloseTo(lon(5), 9);
+        expect(y).toBeCloseTo(lat(3), 9);
+    });
+
+    it("measures in metres, not degrees", () => {
+        // 1 m east of the vertical segment is nearer to it than 4 m north of the horizontal one.
+        const [x, y] = nearestOnPolyline(line, [lon(6), lat(2)]);
+        expect(x).toBeCloseTo(lon(5), 9);
+        expect(y).toBeCloseTo(lat(2), 9);
+    });
+
+    it("copes with a degenerate line", () => {
+        expect(nearestOnPolyline([], [5, 52])).toEqual([5, 52]);
+        expect(nearestOnPolyline([[6, 53]], [5, 52])).toEqual([6, 53]);
     });
 });
