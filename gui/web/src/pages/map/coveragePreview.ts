@@ -110,10 +110,12 @@ export const emptyLayers = (): CoveragePreviewLayers => ({lines: EMPTY, arrows: 
 /** Keep roughly this many metres between arrows along a ring. */
 export const RING_ARROW_SPACING_M = 8;
 /** Never draw more than about this many swath arrows, however many swaths there are. */
-export const MAX_SWATH_ARROWS = 40;
+export const MAX_SWATH_ARROWS = 12;
 /** Arrowhead length as a fraction of the preview's extent, clamped to a readable size. */
 const ARROW_EXTENT_FRACTION = 0.035;
-const ARROW_MIN_M = 0.5;
+const ARROW_MIN_M = 0.35;
+/** Where along a swath successive arrows sit (fraction of its length), cycling. */
+const SWATH_ARROW_POSITIONS = [0.25, 0.5, 0.75];
 const ARROW_MAX_M = 2.0;
 
 const bearingDeg = (dx: number, dy: number): number => {
@@ -270,7 +272,12 @@ export const buildPreviewLayers = (
             geometry: {type: "LineString", coordinates: [toLonLat(a), toLonLat(b)]},
         });
         if (swathIndex % step === 0) {
-            arrows.push(arrow("swath-arrow", {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2}, bearingDeg(b.x - a.x, b.y - a.y)));
+            // Stagger along the swath: arrows all at the midpoint line up in one
+            // row across the lawn and overlap each other.
+            const t = SWATH_ARROW_POSITIONS[(swathIndex / step) % SWATH_ARROW_POSITIONS.length];
+            arrows.push(arrow("swath-arrow",
+                {x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t},
+                bearingDeg(b.x - a.x, b.y - a.y)));
         }
         if (swathIndex === 0 && (res.rings ?? []).length === 0) {
             arrows.push({type: "Feature", properties: {kind: "start"}, geometry: {type: "Point", coordinates: toLonLat(a)}});

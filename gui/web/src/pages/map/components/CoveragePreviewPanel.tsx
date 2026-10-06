@@ -49,7 +49,8 @@ export const CoveragePreviewPanel = ({preview, areaLabel, resumeAvailable = fals
     const sliderValue = Math.round(fixed ? choices.angleDeg : shownAngle) % 180;
     const editable = canEdit && hasAreaId;
     const hasOwnLines = choices.angleMode !== "global" || choices.direction !== "global";
-    const percent = Math.round((result?.planned_fraction ?? 0) * 100);
+    // Swaths and perimeter rounds overlap slightly, so the planner's fraction can pass 1.
+    const percent = Math.min(100, Math.round((result?.planned_fraction ?? 0) * 100));
 
     return (
         <div style={{padding: 12}}>

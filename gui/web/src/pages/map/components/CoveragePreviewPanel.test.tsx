@@ -66,6 +66,11 @@ describe('coverage preview panel', () => {
         expect(screen.getByText('93% of the area planned')).toBeInTheDocument();
     });
 
+    it('never reports more than 100% of the area planned', () => {
+        show(makePreview({result: {success: true, swaths: [{}], headland_passes: 2, planned_fraction: 1.08}} as unknown as Partial<Preview>));
+        expect(screen.getByText('100% of the area planned')).toBeInTheDocument();
+    });
+
     it('shows the planner refusal instead of stale numbers', () => {
         show(makePreview({error: 'field too small after insets', result: undefined}));
         expect(screen.getByText('field too small after insets')).toBeInTheDocument();
