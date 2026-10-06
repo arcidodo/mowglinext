@@ -1,31 +1,47 @@
 import React from "react";
-import {fireEvent, render, screen} from "@testing-library/react";
+import {act, render, screen} from "@testing-library/react";
 import {beforeEach, describe, expect, it, vi} from "vitest";
 import {CoverageStartMarker} from "./CoverageStartMarker.tsx";
 
-const seen = vi.hoisted(() => ({
-    props: null as null | {
-        longitude: number;
-        latitude: number;
-        draggable?: boolean;
-        anchor?: string;
-        onDragEnd?: (event: {lngLat: {lng: number; lat: number}}) => void;
-    },
-}));
+type DragEvent = {lngLat: {lng: number; lat: number}; target: {setLngLat: (p: [number, number]) => void}};
+type MarkerProps = {
+    children: React.ReactNode;
+    longitude: number;
+    latitude: number;
+    draggable?: boolean;
+    anchor?: string;
+    onDrag?: (event: DragEvent) => void;
+    onDragEnd?: (event: DragEvent) => void;
+};
+
+const seen = vi.hoisted(() => ({props: null as null | MarkerProps}));
 
 vi.mock("react-map-gl/mapbox", () => ({
-    Marker: (props: {
-        children: React.ReactNode;
-        longitude: number;
-        latitude: number;
-        draggable?: boolean;
-        anchor?: string;
-        onDragEnd?: (event: {lngLat: {lng: number; lat: number}}) => void;
-    }) => {
+    Marker: (props: MarkerProps) => {
         seen.props = props;
         return <div data-testid="marker">{props.children}</div>;
     },
 }));
+
+// A 100 m-ish east-west line at lat 52: lon 5.000 -> 5.0015.
+const ring: [number, number][] = [[5.0, 52.0], [5.0015, 52.0]];
+
+const drag = (lng: number, lat: number) => {
+    const setLngLat = vi.fn();
+    act(() => seen.props?.onDrag?.({lngLat: {lng, lat}, target: {setLngLat}}));
+    return setLngLat;
+};
+const drop = (lng: number, lat: number) => act(() => seen.props?.onDragEnd?.({lngLat: {lng, lat}, target: {setLngLat: vi.fn()}}));
+
+const renderMarker = (over: Partial<React.ComponentProps<typeof CoverageStartMarker>> = {}) => {
+    const onMove = vi.fn();
+    const props = {
+        longitude: 5.0005, latitude: 52.0, ring, settledCount: 0, onMove, title: "Drag to move the start", ...over,
+    };
+    const utils = render(<CoverageStartMarker {...props}/>);
+    return {onMove, props, ...utils, again: (next: Partial<typeof props>) =>
+        utils.rerender(<CoverageStartMarker {...props} {...next}/>)};
+};
 
 describe("coverage start marker", () => {
     beforeEach(() => {
@@ -33,25 +49,83 @@ describe("coverage start marker", () => {
     });
 
     it("is a draggable marker at the reported start", () => {
-        render(<CoverageStartMarker longitude={5.1} latitude={52.2} onMove={vi.fn()} title="Drag to move the start"/>);
+        renderMarker();
         expect(seen.props?.draggable).toBe(true);
-        expect(seen.props?.longitude).toBe(5.1);
-        expect(seen.props?.latitude).toBe(52.2);
+        expect(seen.props?.longitude).toBe(5.0005);
+        expect(seen.props?.latitude).toBe(52.0);
         expect(seen.props?.anchor).toBe("center");
     });
 
     it("tells the operator it can be dragged", () => {
-        render(<CoverageStartMarker longitude={5} latitude={52} onMove={vi.fn()} title="Drag to move the start"/>);
+        renderMarker();
         expect(screen.getByRole("img", {name: "Drag to move the start"})).toBeInTheDocument();
     });
 
-    it("reports where it was dropped, once, and not while dragging", () => {
-        const onMove = vi.fn();
-        render(<CoverageStartMarker longitude={5} latitude={52} onMove={onMove} title="t"/>);
-        // Dragging alone reports nothing; only the drop does.
-        fireEvent.mouseMove(screen.getByTestId("marker"));
+    it("slides along the ring while it is dragged", () => {
+        renderMarker();
+        // The pointer is 30 m north of the line, over its first third.
+        const setLngLat = drag(5.0005, 52.0003);
+        expect(setLngLat).toHaveBeenCalledOnce();
+        const [lng, lat] = setLngLat.mock.calls[0][0] as [number, number];
+        expect(lng).toBeCloseTo(5.0005, 6);
+        expect(lat).toBeCloseTo(52.0, 9);
+    });
+
+    it("stops at the end of the ring rather than leaving it", () => {
+        renderMarker();
+        const setLngLat = drag(5.005, 52.0);
+        const [lng] = setLngLat.mock.calls[0][0] as [number, number];
+        expect(lng).toBeCloseTo(5.0015, 9);
+    });
+
+    it("follows the pointer freely when there is no ring to slide along", () => {
+        renderMarker({ring: null});
+        const setLngLat = drag(5.0005, 52.0003);
+        expect(setLngLat).toHaveBeenCalledWith([5.0005, 52.0003]);
+    });
+
+    it("reports where it was dropped, on the ring, once, and not while dragging", () => {
+        const {onMove} = renderMarker();
+        drag(5.0007, 52.0004);
         expect(onMove).not.toHaveBeenCalled();
-        seen.props?.onDragEnd?.({lngLat: {lng: 5.0004, lat: 52.0002}});
-        expect(onMove).toHaveBeenCalledExactlyOnceWith(5.0004, 52.0002);
+        drop(5.0007, 52.0004);
+        expect(onMove).toHaveBeenCalledOnce();
+        const [lng, lat] = onMove.mock.calls[0] as [number, number];
+        expect(lng).toBeCloseTo(5.0007, 6);
+        expect(lat).toBeCloseTo(52.0, 9);
+    });
+
+    it("stays where it was dropped until the planner answers, then shows the real start", () => {
+        const {again} = renderMarker();
+        drop(5.0007, 52.0004);
+        // Waiting for the planner: it must NOT jump back to the old start.
+        expect(seen.props?.longitude).toBeCloseTo(5.0007, 6);
+        expect(seen.props?.latitude).toBeCloseTo(52.0, 9);
+
+        // The planner answers with the start it really chose (clear of a corner).
+        again({settledCount: 1, longitude: 5.0009, latitude: 52.0});
+        expect(seen.props?.longitude).toBe(5.0009);
+        expect(seen.props?.latitude).toBe(52.0);
+    });
+
+    it("lets go of the dropped spot when the answer leaves the start where it was", () => {
+        const {again} = renderMarker();
+        drop(5.0007, 52.0004);
+        again({settledCount: 1});
+        expect(seen.props?.longitude).toBe(5.0005);
+    });
+
+    it("does not let go early on an answer that was already counted", () => {
+        const {again} = renderMarker({settledCount: 3});
+        drop(5.0007, 52.0004);
+        again({settledCount: 3});
+        expect(seen.props?.longitude).toBeCloseTo(5.0007, 6);
+    });
+
+    it("lets go of the dropped spot when the start itself changes, for example after a reset", () => {
+        const {again} = renderMarker();
+        drop(5.0007, 52.0004);
+        again({longitude: 5.0012, latitude: 52.0});
+        expect(seen.props?.longitude).toBe(5.0012);
     });
 });

@@ -132,10 +132,49 @@ export interface CoveragePreviewLayers {
     arrows: FeatureCollection;
     /** [lon, lat] of the route's start, for the draggable marker; null when there is none. */
     startLonLat: [number, number] | null;
+    /** The outermost headland ring as a closed [lon, lat] line, for snapping the start marker to it. */
+    outerRingLonLat: [number, number][] | null;
 }
 
 const EMPTY: FeatureCollection = {type: "FeatureCollection", features: []};
-export const emptyLayers = (): CoveragePreviewLayers => ({lines: EMPTY, arrows: EMPTY, startLonLat: null});
+export const emptyLayers = (): CoveragePreviewLayers => ({
+    lines: EMPTY, arrows: EMPTY, startLonLat: null, outerRingLonLat: null,
+});
+
+const METERS_PER_DEG = 111319.49;
+
+/**
+ * The point on `line` ([lon, lat] vertices) nearest to `point`, measured in metres (longitude
+ * scaled by cos(lat)). Used to slide the start marker along the outer ring while it is dragged.
+ * An empty line returns the point unchanged.
+ */
+export const nearestOnPolyline = (
+    line: readonly (readonly [number, number])[],
+    point: readonly [number, number],
+): [number, number] => {
+    if (line.length === 0) return [point[0], point[1]];
+    if (line.length === 1) return [line[0][0], line[0][1]];
+    const kx = Math.cos((point[1] * Math.PI) / 180) * METERS_PER_DEG;
+    const ky = METERS_PER_DEG;
+    let best: [number, number] = [line[0][0], line[0][1]];
+    let bestD = Infinity;
+    for (let i = 0; i + 1 < line.length; i++) {
+        const ax = line[i][0] * kx;
+        const ay = line[i][1] * ky;
+        const dx = line[i + 1][0] * kx - ax;
+        const dy = line[i + 1][1] * ky - ay;
+        const len2 = dx * dx + dy * dy;
+        const t = len2 < 1e-12 ? 0 : Math.max(0, Math.min(1, ((point[0] * kx - ax) * dx + (point[1] * ky - ay) * dy) / len2));
+        const cx = line[i][0] + t * (line[i + 1][0] - line[i][0]);
+        const cy = line[i][1] + t * (line[i + 1][1] - line[i][1]);
+        const d = Math.hypot((point[0] - cx) * kx, (point[1] - cy) * ky);
+        if (d < bestD) {
+            bestD = d;
+            best = [cx, cy];
+        }
+    }
+    return best;
+};
 
 /** Keep roughly this many metres between arrows along a ring. */
 export const RING_ARROW_SPACING_M = 8;
@@ -312,9 +351,12 @@ export const buildPreviewLayers = (
         ? {x: res.start_x as number, y: res.start_y as number}
         : firstRing[0] ?? firstSwath[0];
 
+    const outerRing = lines.find((f) => f.properties?.kind === "ring" && f.properties?.index === 0);
+
     return {
         lines: {type: "FeatureCollection", features: lines},
         arrows: {type: "FeatureCollection", features: arrows},
         startLonLat: start ? toLonLat(start) : null,
+        outerRingLonLat: outerRing ? (outerRing.geometry.coordinates as [number, number][]) : null,
     };
 };

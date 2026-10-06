@@ -1739,6 +1739,8 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 <CoverageStartMarker
                                     longitude={coveragePreview.startLonLat[0]}
                                     latitude={coveragePreview.startLonLat[1]}
+                                    ring={coveragePreview.outerRingLonLat}
+                                    settledCount={coveragePreview.settledCount}
                                     onMove={coveragePreview.moveStartTo}
                                     title={t('coveragePreview.startMarkerTitle')}
                                 />
