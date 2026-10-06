@@ -284,7 +284,9 @@ struct RingClosure
 // exactly: a closure on a corner is the one vertex the corner fillet can never
 // round, and the ring-to-ring junction then demanded a full corner turn (field
 // report 2026-07, the robot stalling after every ring).
-// With a hint: the side NEAREST the hint, and on it the point nearest the hint,
+// With a hint: the side NEAREST the hint (among real sides: those shorter than 1 m, such as
+// the chain of tiny sides that makes a rounded corner, are skipped), and on it the point
+// nearest the hint,
 // kept at least `keep_off` from both ends of that side (so the closure stays on
 // the straight part, clear of the corner fillets). A side too short to leave
 // room for that falls back to its midpoint. Never lands on a corner.
