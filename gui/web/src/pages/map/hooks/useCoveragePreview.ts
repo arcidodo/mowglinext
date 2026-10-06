@@ -64,6 +64,9 @@ export const useCoveragePreview = ({
     const [loading, setLoading] = useState(false);
     const [saving, setSaving] = useState(false);
     const [error, setError] = useState<string | undefined>();
+    // Counts planner answers (or failures) received for the CURRENT request, so the start marker
+    // knows when to let go of the spot it was dropped on and show the planner's real start.
+    const [settledCount, setSettledCount] = useState(0);
     const requestSeq = useRef(0);
 
     // Follow the editor's selection until the operator picks an area by hand.
@@ -148,7 +151,10 @@ export const useCoveragePreview = ({
                 setResult(undefined);
                 setError(e instanceof Error ? e.message : t("coveragePreview.failed"));
             } finally {
-                if (seq === requestSeq.current) setLoading(false);
+                if (seq === requestSeq.current) {
+                    setLoading(false);
+                    setSettledCount((n) => n + 1);
+                }
             }
         }, DEBOUNCE_MS);
         return () => clearTimeout(timer);
@@ -259,6 +265,8 @@ export const useCoveragePreview = ({
         // Where the route really starts (the planner snaps the chosen point onto the outer ring),
         // and whether a start can be placed at all (not with the headland rings off).
         startLonLat: layers.startLonLat,
+        outerRingLonLat: layers.outerRingLonLat,
+        settledCount,
         startAdjustable: result?.start_adjustable !== false,
         robotWideAngle, robotWideDirection, shownAngle,
         dirty, differsFromRobotWide, reset, saveArea, saveRobotWide, saving,
