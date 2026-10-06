@@ -3,6 +3,7 @@ import {App} from "antd";
 import {useTranslation} from "react-i18next";
 import {useApi} from "../../../hooks/useApi.ts";
 import type {MowingAreaFeature, ObstacleFeature} from "../../../types/map.ts";
+import {itranspose} from "../../../utils/map.tsx";
 import {
     buildPreviewLayers,
     choicesFromArea,
@@ -16,6 +17,7 @@ import {
     type AreaChoices,
     type CoveragePreviewResult,
     type DirectionChoice,
+    type MapPoint,
 } from "../coveragePreview.ts";
 
 /** Wait this long after the last change before asking the planner again. */
@@ -87,6 +89,8 @@ export const useCoveragePreview = ({
         angleMode: draft.angleMode ?? saved.angleMode,
         angleDeg: draft.angleDeg ?? saved.angleDeg,
         direction: draft.direction ?? saved.direction,
+        // null is a choice (the planner's own start), so only undefined means "no draft".
+        start: draft.start === undefined ? saved.start : draft.start,
     }), [draft, saved]);
     const dirty = !sameChoices(choices, saved);
     const requested = useMemo(
@@ -110,6 +114,9 @@ export const useCoveragePreview = ({
             obstacles: holes,
             mow_angle_deg: requested.mow_angle_deg,
             ring_direction: requested.ring_direction,
+            has_start_point: requested.start !== null,
+            start_x: requested.start?.x ?? 0,
+            start_y: requested.start?.y ?? 0,
         };
     }, [enabled, area, obstacles, datum, offsetX, offsetY, requested]);
     const signature = useMemo(() => (requestBody ? JSON.stringify(requestBody) : ""), [requestBody]);
@@ -171,6 +178,13 @@ export const useCoveragePreview = ({
     }, [shownAngle]);
     const setAngleDeg = useCallback((deg: number) => setDraft((d) => ({...d, angleMode: "fixed", angleDeg: deg})), []);
     const setDirection = useCallback((direction: DirectionChoice) => setDraft((d) => ({...d, direction})), []);
+    /** Where the route starts, or null for the planner's own start. The planner snaps it onto the outer ring. */
+    const setStart = useCallback((start: MapPoint | null) => setDraft((d) => ({...d, start})), []);
+    /** The operator dropped the start marker at this spot on the map. */
+    const moveStartTo = useCallback((lon: number, lat: number) => {
+        const [x, y] = itranspose(offsetX, offsetY, datum, lat, lon);
+        setStart({x, y});
+    }, [offsetX, offsetY, datum, setStart]);
     const reset = useCallback(() => setDraft({}), []);
 
     // callCreate hands back {error: "reason"} for an application error and a
@@ -241,7 +255,11 @@ export const useCoveragePreview = ({
     return {
         enabled, setEnabled,
         areas, area, selectArea, hasAreaId: mapAreaId !== 0, canEdit,
-        choices, setAngleMode, setAngleDeg, setDirection,
+        choices, setAngleMode, setAngleDeg, setDirection, setStart, moveStartTo,
+        // Where the route really starts (the planner snaps the chosen point onto the outer ring),
+        // and whether a start can be placed at all (not with the headland rings off).
+        startLonLat: layers.startLonLat,
+        startAdjustable: result?.start_adjustable !== false,
         robotWideAngle, robotWideDirection, shownAngle,
         dirty, differsFromRobotWide, reset, saveArea, saveRobotWide, saving,
         loading, error, result, layers,

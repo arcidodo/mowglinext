@@ -131,3 +131,62 @@ TEST(AreaCoverageLinesChoice, OneCorruptValueDoesNotSpoilTheOther)
   EXPECT_TRUE(c.override_ring_direction);
   EXPECT_EQ(c.ring_direction, 1);
 }
+
+TEST(AreaCoverageLinesChoice, AnAreaWithoutAStartPointLetsThePlannerStartWhereItAlwaysDid)
+{
+  const auto c = ResolveCoverageLines(mowgli_interfaces::msg::MapArea{}, 37.0);
+  EXPECT_FALSE(c.has_start_point);
+  EXPECT_EQ(c.start_x, 0.0);
+  EXPECT_EQ(c.start_y, 0.0);
+}
+
+TEST(AreaCoverageLinesChoice, AnAreasStartPointIsPassedThrough)
+{
+  auto a = area(false, 0.0, false, 0);
+  a.has_start_point = true;
+  a.start_x = 12.5;
+  a.start_y = -3.0;
+  const auto c = ResolveCoverageLines(a, -1.0);
+  EXPECT_TRUE(c.has_start_point);
+  EXPECT_DOUBLE_EQ(c.start_x, 12.5);
+  EXPECT_DOUBLE_EQ(c.start_y, -3.0);
+}
+
+TEST(AreaCoverageLinesChoice, ZeroZeroIsARealStartPoint)
+{
+  auto a = area(false, 0.0, false, 0);
+  a.has_start_point = true;
+  EXPECT_TRUE(ResolveCoverageLines(a, -1.0).has_start_point);
+}
+
+TEST(AreaCoverageLinesChoice, AStoredStartWithoutItsFlagMeansNothing)
+{
+  auto a = area(false, 0.0, false, 0);
+  a.start_x = 5.0;
+  a.start_y = 6.0;
+  EXPECT_FALSE(ResolveCoverageLines(a, -1.0).has_start_point);
+}
+
+TEST(AreaCoverageLinesChoice, ANonFiniteStartPointIsDropped)
+{
+  auto a = area(false, 0.0, false, 0);
+  a.has_start_point = true;
+  a.start_x = std::numeric_limits<double>::quiet_NaN();
+  a.start_y = 1.0;
+  EXPECT_FALSE(ResolveCoverageLines(a, -1.0).has_start_point);
+  a.start_x = 1.0;
+  a.start_y = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(ResolveCoverageLines(a, -1.0).has_start_point);
+}
+
+TEST(AreaCoverageLinesChoice, TheStartPointIsIndependentOfTheAngleAndWinding)
+{
+  auto a = area(true, 80.0, true, 2);
+  a.has_start_point = true;
+  a.start_x = 1.0;
+  a.start_y = 2.0;
+  const auto c = ResolveCoverageLines(a, 37.0);
+  EXPECT_DOUBLE_EQ(c.mow_angle_deg, 80.0);
+  EXPECT_EQ(c.ring_direction, 2);
+  EXPECT_TRUE(c.has_start_point);
+}

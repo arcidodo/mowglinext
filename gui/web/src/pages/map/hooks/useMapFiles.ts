@@ -140,6 +140,10 @@ export function useMapFiles({
                         mow_angle_deg: f.area.mow_angle_deg,
                         has_ring_direction: f.area.has_ring_direction,
                         ring_direction: f.area.ring_direction,
+                        // And where the route starts.
+                        has_start_point: f.area.has_start_point,
+                        start_x: f.area.start_x,
+                        start_y: f.area.start_y,
                     }
                     : {}),
             };

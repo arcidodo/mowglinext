@@ -610,6 +610,26 @@ func TestServiceRoute_PreviewCoverage(t *testing.T) {
 		assert.Contains(t, w.Body.String(), "field too small")
 	})
 
+	t.Run("a start point is passed to the planner, and its absence means no start point", func(t *testing.T) {
+		mock := types.NewMockRosProvider()
+		var got mowgli.PreviewCoverageReq
+		mock.ServiceResponder = func(service string, req any, res any) {
+			got = *req.(*mowgli.PreviewCoverageReq)
+			*res.(*mowgli.PreviewCoverageRes) = mowgli.PreviewCoverageRes{Success: true, StartAdjustable: true, StartX: 3.5, StartY: -1}
+		}
+		w := call(mock, map[string]any{"outer_boundary": square, "has_start_point": true, "start_x": 0, "start_y": 4.25})
+		assert.Equal(t, 200, w.Code)
+		assert.True(t, got.HasStartPoint)
+		assert.Equal(t, 0.0, got.StartX, "0 is a real coordinate")
+		assert.Equal(t, 4.25, got.StartY)
+		// The planner's answer (where it really starts) is relayed to the page.
+		assert.Contains(t, w.Body.String(), `"start_adjustable":true`)
+		assert.Contains(t, w.Body.String(), `"start_x":3.5`)
+
+		call(mock, map[string]any{"outer_boundary": square})
+		assert.False(t, got.HasStartPoint)
+	})
+
 	t.Run("a boundary with fewer than three points is rejected before ROS", func(t *testing.T) {
 		mock := types.NewMockRosProvider()
 		mock.ServiceResponder = func(service string, req any, res any) {
@@ -678,4 +698,24 @@ func TestServiceRoute_SetAreaCoverageLines(t *testing.T) {
 		assert.NotEqual(t, 200, w.Code)
 		assert.Contains(t, w.Body.String(), "no area with id 9")
 	})
+}
+
+func TestServiceRoute_SetAreaCoverageLinesStartPoint(t *testing.T) {
+	mock := types.NewMockRosProvider()
+	var got mowgli.SetAreaCoverageLinesReq
+	mock.ServiceResponder = func(service string, req any, res any) {
+		got = *req.(*mowgli.SetAreaCoverageLinesReq)
+		*res.(*mowgli.SetAreaCoverageLinesRes) = mowgli.SetAreaCoverageLinesRes{Success: true}
+	}
+	raw, _ := json.Marshal(map[string]any{"id": 4, "has_start_point": true, "start_x": 12.5, "start_y": -3})
+	req := httptest.NewRequest("POST", "/api/mowglinext/call/set_area_coverage_lines", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	setupMowgliNextRouter(mock).ServeHTTP(w, req)
+
+	assert.Equal(t, 200, w.Code)
+	assert.True(t, got.HasStartPoint)
+	assert.Equal(t, 12.5, got.StartX)
+	assert.Equal(t, -3.0, got.StartY)
+	assert.False(t, got.HasMowAngle, "an omitted flag clears that override, it does not set zero")
 }

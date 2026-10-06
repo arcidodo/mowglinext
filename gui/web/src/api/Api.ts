@@ -269,6 +269,7 @@ export interface MowgliMapArea {
   area?: GeometryPolygon;
   has_mow_angle?: boolean;
   has_ring_direction?: boolean;
+  has_start_point?: boolean;
   id?: number;
   is_navigation_area?: boolean;
   mow_angle_deg?: number;
@@ -276,6 +277,8 @@ export interface MowgliMapArea {
   obstacle_info?: MowgliMapObstacleInfo[];
   obstacles?: GeometryPolygon[];
   ring_direction?: number;
+  start_x?: number;
+  start_y?: number;
 }
 
 export interface MowgliMapObstacleInfo {

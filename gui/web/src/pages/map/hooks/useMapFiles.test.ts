@@ -131,6 +131,17 @@ describe('useMapFiles handleSaveMap per-area coverage lines', () => {
         });
     });
 
+    it('sends each area\'s own start point back, (0, 0) included', async () => {
+        const own = area('area-0-area-0', 1, {id: 1, has_start_point: true, start_x: 12.5, start_y: -3});
+        const origin = area('area-1-area-0', 2, {id: 2, has_start_point: true, start_x: 0, start_y: 0});
+        const plain = area('area-2-area-0', 3, {id: 3});
+        const sent = await save({[own.id]: own, [origin.id]: origin, [plain.id]: plain});
+        const byName = Object.fromEntries(sent.map((x) => [x.area.name as string, x.area]));
+        expect(byName['Area 1']).toMatchObject({has_start_point: true, start_x: 12.5, start_y: -3});
+        expect(byName['Area 2']).toMatchObject({has_start_point: true, start_x: 0, start_y: 0});
+        expect(byName['Area 3'].has_start_point).toBeFalsy();
+    });
+
     it('keeps an area that follows the robot-wide settings following them', async () => {
         const plain = area('area-0-area-0', 1, {id: 1});
         const sent = await save({[plain.id]: plain});

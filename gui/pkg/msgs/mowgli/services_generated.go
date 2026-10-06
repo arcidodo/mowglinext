@@ -209,6 +209,9 @@ type PreviewCoverageReq struct {
 	MowAngleDeg               float64                        `json:"mow_angle_deg"`
 	Perpendicular             bool                           `json:"perpendicular"`
 	RingDirection             int32                          `json:"ring_direction"`
+	HasStartPoint             bool                           `json:"has_start_point"`
+	StartX                    float64                        `json:"start_x"`
+	StartY                    float64                        `json:"start_y"`
 }
 
 // PreviewCoverageRes for mowgli_interfaces/srv/PreviewCoverage response.
@@ -223,6 +226,9 @@ type PreviewCoverageRes struct {
 	PlannedFraction           float64                        `json:"planned_fraction"`
 	FieldAreaM2               float64                        `json:"field_area_m2"`
 	DroppedPieces             uint32                         `json:"dropped_pieces"`
+	StartAdjustable           bool                           `json:"start_adjustable"`
+	StartX                    float64                        `json:"start_x"`
+	StartY                    float64                        `json:"start_y"`
 }
 
 // PreviewObstacleClearanceReq for mowgli_interfaces/srv/PreviewObstacleClearance request.
@@ -258,6 +264,9 @@ type SetAreaCoverageLinesReq struct {
 	MowAngleDeg               float64                        `json:"mow_angle_deg"`
 	HasRingDirection          bool                           `json:"has_ring_direction"`
 	RingDirection             uint8                          `json:"ring_direction"`
+	HasStartPoint             bool                           `json:"has_start_point"`
+	StartX                    float64                        `json:"start_x"`
+	StartY                    float64                        `json:"start_y"`
 }
 
 // SetAreaCoverageLinesRes for mowgli_interfaces/srv/SetAreaCoverageLines response.

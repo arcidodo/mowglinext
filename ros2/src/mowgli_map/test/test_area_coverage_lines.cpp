@@ -18,6 +18,8 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
+#include <vector>
 
 #include "mowgli_map/area_coverage_lines.hpp"
 #include <gtest/gtest.h>
@@ -127,4 +129,98 @@ TEST(AreaCoverageLines, RejectsAnUnknownWinding)
   EXPECT_TRUE(CheckCoverageLines(false, 0.0, true, 2).ok);
   // An ignored value is not validated.
   EXPECT_TRUE(CheckCoverageLines(false, 0.0, false, 9).ok);
+}
+
+// ---- start point ----------------------------------------------------------------
+
+using mowgli_map::kMaxStartPointOutsideM;
+using mowgli_map::StartPointNearPolygon;
+
+TEST(AreaCoverageLinesStart, DefaultsToThePlannersOwnStart)
+{
+  const AreaCoverageLines lines;
+  EXPECT_FALSE(lines.has_start_point);
+  EXPECT_EQ(lines.start_x, 0.0);
+  EXPECT_EQ(lines.start_y, 0.0);
+}
+
+TEST(AreaCoverageLinesStart, ASetStartPointIsKeptWithBothCoordinates)
+{
+  const auto check = CheckCoverageLines(false, 0.0, false, 0, true, 12.5, -3.25);
+  ASSERT_TRUE(check.ok);
+  EXPECT_TRUE(check.lines.has_start_point);
+  EXPECT_DOUBLE_EQ(check.lines.start_x, 12.5);
+  EXPECT_DOUBLE_EQ(check.lines.start_y, -3.25);
+}
+
+TEST(AreaCoverageLinesStart, AClearedStartPointLeavesNoStaleCoordinates)
+{
+  const auto check = CheckCoverageLines(false, 0.0, false, 0, false, 12.5, -3.25);
+  ASSERT_TRUE(check.ok);
+  EXPECT_EQ(check.lines, AreaCoverageLines{});
+}
+
+TEST(AreaCoverageLinesStart, ZeroZeroIsARealStartPoint)
+{
+  const auto check = CheckCoverageLines(false, 0.0, false, 0, true, 0.0, 0.0);
+  ASSERT_TRUE(check.ok);
+  EXPECT_TRUE(check.lines.has_start_point);
+}
+
+TEST(AreaCoverageLinesStart, RejectsANonFiniteStartPointAndKeepsNothingFromTheRequest)
+{
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  const std::vector<std::pair<double, double>> bad = {{nan, 1.0}, {1.0, nan}, {inf, 1.0}};
+  for (const auto& xy : bad)
+  {
+    const auto check = CheckCoverageLines(true, 30.0, true, 1, true, xy.first, xy.second);
+    EXPECT_FALSE(check.ok);
+    EXPECT_FALSE(check.message.empty());
+    EXPECT_EQ(check.lines, AreaCoverageLines{}) << "one bad value must not half-apply the rest";
+  }
+  // ...but a non-finite start that is not being set is ignored.
+  EXPECT_TRUE(CheckCoverageLines(false, 0.0, false, 0, false, nan, nan).ok);
+}
+
+TEST(AreaCoverageLinesStart, EachOverrideIsIndependentOfTheStartPoint)
+{
+  const auto check = CheckCoverageLines(true, 45.0, false, 0, true, 1.0, 2.0);
+  ASSERT_TRUE(check.ok);
+  EXPECT_TRUE(check.lines.has_mow_angle);
+  EXPECT_FALSE(check.lines.has_ring_direction);
+  EXPECT_TRUE(check.lines.has_start_point);
+}
+
+namespace
+{
+const std::vector<std::pair<double, double>> kSquare = {{0, 0}, {10, 0}, {10, 10}, {0, 10}};
+}
+
+TEST(AreaCoverageLinesStart, ApointInsideOrOnTheLineIsNearTheArea)
+{
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 5.0, 5.0));
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 10.0, 5.0));
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 0.0, 0.0));
+}
+
+TEST(AreaCoverageLinesStart, ApointJustOutsideIsStillNearButAFarOneIsNot)
+{
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 11.5, 5.0));
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 10.0 + kMaxStartPointOutsideM, 5.0));
+  EXPECT_FALSE(StartPointNearPolygon(kSquare, 10.0 + kMaxStartPointOutsideM + 0.1, 5.0));
+  EXPECT_FALSE(StartPointNearPolygon(kSquare, -20.0, -20.0));
+}
+
+TEST(AreaCoverageLinesStart, ADegeneratePolygonHasNothingNearIt)
+{
+  EXPECT_FALSE(StartPointNearPolygon({}, 0.0, 0.0));
+  EXPECT_FALSE(StartPointNearPolygon({{0, 0}, {1, 1}}, 0.0, 0.0));
+}
+
+TEST(AreaCoverageLinesStart, TheTolerancePastACornerIsMeasuredFromTheCorner)
+{
+  // 2 m past each axis of the corner (10,10) is 2.83 m away: near; 2.2 each is 3.11: not.
+  EXPECT_TRUE(StartPointNearPolygon(kSquare, 12.0, 12.0));
+  EXPECT_FALSE(StartPointNearPolygon(kSquare, 12.2, 12.2));
 }

@@ -760,6 +760,11 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				MowAngleDeg   *float64           `json:"mow_angle_deg"`
 				Perpendicular bool               `json:"perpendicular"`
 				RingDirection *int32             `json:"ring_direction"`
+				// Where the route starts: snapped onto the OUTERMOST headland ring.
+				// Omitted = the planner's own start.
+				HasStartPoint bool    `json:"has_start_point"`
+				StartX        float64 `json:"start_x"`
+				StartY        float64 `json:"start_y"`
 			}
 			if err = c.BindJSON(&previewReq); err != nil {
 				c.JSON(400, ErrorResponse{Error: err.Error()})
@@ -778,6 +783,9 @@ func ServiceRoute(group *gin.RouterGroup, provider types.IRosProvider) {
 				MowAngleDeg:   -1,
 				Perpendicular: previewReq.Perpendicular,
 				RingDirection: -1,
+				HasStartPoint: previewReq.HasStartPoint,
+				StartX:        previewReq.StartX,
+				StartY:        previewReq.StartY,
 			}
 			if previewReq.MowAngleDeg != nil {
 				previewCall.MowAngleDeg = *previewReq.MowAngleDeg

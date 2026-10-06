@@ -8,6 +8,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -453,6 +454,20 @@ double pathLength(const nav_msgs::msg::Path& path)
 
 }  // namespace
 
+namespace
+{
+// The operator's start point as a planner hint. A point that is not a finite pair is
+// no hint at all (the planner then starts where it always did) rather than an error.
+std::optional<std::pair<double, double>> startHint(bool has_start_point, double x, double y)
+{
+  if (!has_start_point || !std::isfinite(x) || !std::isfinite(y))
+  {
+    return std::nullopt;
+  }
+  return std::make_pair(x, y);
+}
+}  // namespace
+
 CoverageServer::LivePlanParams CoverageServer::readLivePlanParams()
 {
   LivePlanParams live;
@@ -515,6 +530,9 @@ void CoverageServer::planCoverage()
     // per-area override); a goal that does not — every goal built before the
     // field existed — plans with the live parameter, exactly as before. An
     // unknown value is ignored rather than failing the plan or guessing.
+    // Where the route starts, if the operator chose (the outermost ring is then driven
+    // first, from that point). Without one, the planner starts where it always did.
+    const auto start_hint = startHint(goal->has_start_point, goal->start_x, goal->start_y);
     int ring_direction = live.ring_direction;
     if (goal->override_ring_direction)
     {
@@ -577,7 +595,8 @@ void CoverageServer::planCoverage()
                                                ring_direction,
                                                min_turning_radius,
                                                goal->perpendicular,
-                                               connector_max_headland_passes);
+                                               connector_max_headland_passes,
+                                               start_hint);
     const double plan_ms = 1e3 * (now() - t_plan0).seconds();
 
     // Instrumentation (no behaviour change): surface every piece the planner
@@ -747,7 +766,9 @@ void CoverageServer::planCoverage()
                                                   kConnectorStep,
                                                   &connector_stats,
                                                   swath_turn_boundary,
-                                                  pivot_limits);
+                                                  pivot_limits,
+                                                  /*pin_first_subpath=*/start_hint.has_value() &&
+                                                      !plan.rings.empty());
     const double subpaths_ms = 1e3 * (now() - t_subpaths0).seconds();
 
     result->full_path.header = header;
@@ -1071,17 +1092,19 @@ void CoverageServer::previewCoverage(
         (goal.mow_angle_deg < 0.0) ? -1.0 : goal.mow_angle_deg * M_PI / 180.0;
 
     const f2c::types::Cell cell = buildCellFromGoal(goal, live.obstacle_margin);
-    const BoustrophedonPlan plan = planBoustrophedon(cell,
-                                                     operation_width_,
-                                                     default_headland_width_,
-                                                     num_headland_passes_,
-                                                     live.effective_inset,
-                                                     mow_angle_rad,
-                                                     live.min_swath_length,
-                                                     ring_direction,
-                                                     live.min_turning_radius,
-                                                     goal.perpendicular,
-                                                     live.connector_max_headland_passes);
+    const BoustrophedonPlan plan =
+        planBoustrophedon(cell,
+                          operation_width_,
+                          default_headland_width_,
+                          num_headland_passes_,
+                          live.effective_inset,
+                          mow_angle_rad,
+                          live.min_swath_length,
+                          ring_direction,
+                          live.min_turning_radius,
+                          goal.perpendicular,
+                          live.connector_max_headland_passes,
+                          startHint(request->has_start_point, request->start_x, request->start_y));
 
     if (plan.rings.empty() && plan.swaths.empty())
     {
@@ -1121,6 +1144,20 @@ void CoverageServer::previewCoverage(
     response->planned_fraction = preview.planned_fraction;
     response->field_area_m2 = preview.field_area_m2;
     response->dropped_pieces = static_cast<uint32_t>(preview.dropped_pieces);
+    // Where the route really starts: the outermost ring's first point, which is the
+    // operator's start point snapped onto that ring. With the rings off there is no
+    // ring to start on, so the hint does nothing and the route starts at the first swath.
+    response->start_adjustable = !plan.rings.empty();
+    if (!plan.rings.empty() && !plan.rings.front().empty())
+    {
+      response->start_x = plan.rings.front().front().first;
+      response->start_y = plan.rings.front().front().second;
+    }
+    else if (!plan.swaths.empty())
+    {
+      response->start_x = plan.swaths.front().first.first;
+      response->start_y = plan.swaths.front().first.second;
+    }
     response->success = true;
   }
   catch (const std::exception& e)

@@ -46,6 +46,7 @@ import {useObstacleClearancePreview} from "./map/hooks/useObstacleClearancePrevi
 import {useCoveragePreview} from "./map/hooks/useCoveragePreview.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {CoveragePreviewPanel} from "./map/components/CoveragePreviewPanel.tsx";
+import {CoverageStartMarker} from "./map/components/CoverageStartMarker.tsx";
 import {calculateMapViewportBounds} from "./map/utils/mapViewport.ts";
 
 // Distinct from the red drawn-obstacle fill, so the toggleable
@@ -55,7 +56,6 @@ const OBSTACLE_CLEARANCE_PREVIEW_COLOR = '#faad14';
 // each other and from the amber clearance outline, on satellite imagery.
 const COVERAGE_RING_COLOR = '#00d8ff';
 const COVERAGE_SWATH_COLOR = '#ffe14a';
-const COVERAGE_START_COLOR = '#34c759';
 import {extractObstacleProposals, isDigProposal} from "./map/utils/obstacleProposals.ts";
 import {MapOffsetPanel} from "./map/components/MapOffsetPanel.tsx";
 import {MapImageMarker} from "./map/components/MapImageMarker.tsx";
@@ -1724,15 +1724,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                 <Layer type={"line"} id={"coverage-preview-arrow-outline"}
                                     filter={['in', ['get', 'kind'], ['literal', ['ring-arrow', 'swath-arrow']]]}
                                     paint={{'line-color': '#000000', 'line-width': 1, 'line-opacity': 0.7}}/>
-                                <Layer type={"circle"} id={"coverage-preview-start"}
-                                    filter={['==', ['get', 'kind'], 'start']}
-                                    paint={{
-                                        'circle-radius': 6,
-                                        'circle-color': COVERAGE_START_COLOR,
-                                        'circle-stroke-color': '#ffffff',
-                                        'circle-stroke-width': 2,
-                                    }}/>
                             </Source>
+                            {/* Where the route starts: draggable. The planner snaps the dropped point onto
+                                the outermost ring and answers with the real start, so the dot always shows
+                                what the robot will do. Hidden with the rings off (nothing to start on). */}
+                            {coveragePreview.startLonLat && coveragePreview.startAdjustable && (
+                                <CoverageStartMarker
+                                    longitude={coveragePreview.startLonLat[0]}
+                                    latitude={coveragePreview.startLonLat[1]}
+                                    onMove={coveragePreview.moveStartTo}
+                                    title={t('coveragePreview.startMarkerTitle')}
+                                />
+                            )}
                         </>
                     )}
                     {/* The actual ignored band (width_m), under everything else so the

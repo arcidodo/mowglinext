@@ -17,6 +17,9 @@ bool has_mow_angle              # false = clear the override (use the robot-wide
 float64 mow_angle_deg           # degrees, folded into [0, 180) by the server; negative = AUTO for this area; ignored when has_mow_angle is false
 bool has_ring_direction         # false = clear the override (use the robot-wide ring_direction)
 uint8 ring_direction            # 0 planner default, 1 clockwise, 2 counter-clockwise; ignored when has_ring_direction is false
+bool has_start_point            # false = clear the override (the planner's own start)
+float64 start_x                 # map-frame metres; must lie inside the area or within a few metres of its recorded line; ignored when has_start_point is false
+float64 start_y
 ---
 bool success
 string message                  # failure reason when success == false (unknown id, bad values, save failure)

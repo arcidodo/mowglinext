@@ -1782,7 +1782,14 @@
     "savedAreaDescription": "They apply from the next time this area is planned. No restart needed.",
     "savedRobotWide": "Robot-wide mowing lines saved",
     "savedRobotWideRestart": "Restart the ROS2 stack (docked, not mowing) for the robot to use the new angle and direction.",
-    "saveFailed": "Could not save the mowing lines"
+    "saveFailed": "Could not save the mowing lines",
+    "startPoint": "Start point",
+    "startAutomatic": "Automatic: the middle of the longest side.",
+    "startCustom": "You chose where mowing starts.",
+    "startHint": "Drag the green dot to change where mowing starts. It always starts on the outermost round and snaps onto it.",
+    "startReset": "Back to automatic",
+    "startNeedsRings": "A start point needs the perimeter rounds. Without them mowing starts at the first line.",
+    "startMarkerTitle": "Drag to move where mowing starts"
   },
   "mapOffsetPanel": {
     "mapOffset": "Map Offset",
