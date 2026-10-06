@@ -260,6 +260,36 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
                                     bool perpendicular = false,
                                     int connector_max_headland_passes = 0);
 
+// A plan reduced to what the GUI's map-editor line preview draws: the headland
+// rings and the swaths, in DRIVE order, plus the numbers that explain them.
+// Pure data (std types only) so it is unit-testable without ROS.
+struct CoveragePreview
+{
+  // Closed headland loops, outermost first, vertices in the order the robot
+  // drives them (so the winding — the "perimeter direction" — is readable from
+  // the point order). Simplified: the planner densifies rings to ~0.10 m, which
+  // is useless to a screen and heavy to ship, so collinear points are dropped.
+  std::vector<std::vector<std::pair<double, double>>> rings;
+  // Straight swaths as {start, end}, in serpentine drive order (direction
+  // alternates), copied from the plan unchanged.
+  std::vector<std::pair<std::pair<double, double>, std::pair<double, double>>> swaths;
+  // Swath heading the planner actually used, in degrees within [0, 180) — this
+  // is what resolves an AUTO (negative) request.
+  double swath_angle_deg = 0.0;
+  int headland_passes = 0;
+  double planned_fraction = 0.0;
+  double field_area_m2 = 0.0;
+  std::size_t dropped_pieces = 0;
+};
+
+// Reduce `plan` for the preview. `simplify_tolerance_m` is the largest distance
+// a dropped ring vertex may lie from the simplified line (the default 2 cm is far
+// below anything visible at editor zoom). Closed loops stay closed, and the
+// first and last vertex of every ring are always kept, so a ring never loses its
+// start or its winding. Pure function.
+CoveragePreview summarisePlanForPreview(const BoustrophedonPlan& plan,
+                                        double simplify_tolerance_m = 0.02);
+
 // Per-plan accounting of how every segment-to-segment join was resolved by
 // buildConnector's radius-shrink search. Pure visibility — populating it
 // changes no decision.
