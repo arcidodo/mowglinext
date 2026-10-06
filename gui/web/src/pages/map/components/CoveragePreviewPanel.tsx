@@ -34,7 +34,8 @@ export const CoveragePreviewPanel = ({preview, areaLabel}: CoveragePreviewPanelP
         return <div style={{padding: 12, fontSize: 13, color: colors.textSecondary}}>{t('coveragePreview.noAreas')}</div>;
     }
 
-    const percent = Math.round((result?.planned_fraction ?? 0) * 100);
+    // Swaths and perimeter rounds overlap slightly, so the planner's fraction can pass 1.
+    const percent = Math.min(100, Math.round((result?.planned_fraction ?? 0) * 100));
 
     return (
         <div style={{padding: 12}}>

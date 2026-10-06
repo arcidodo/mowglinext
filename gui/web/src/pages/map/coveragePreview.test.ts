@@ -84,6 +84,17 @@ describe("buildPreviewLayers", () => {
         expect(arrows.features.filter((f) => f.properties?.kind === "swath-arrow").length).toBeLessThanOrEqual(MAX_SWATH_ARROWS);
     });
 
+    it("staggers swath arrows along the swaths instead of lining them up", () => {
+        const swaths = Array.from({length: 36}, (_, i) => ({points: [{x: 0, y: i * 0.2}, {x: 10, y: i * 0.2}]}));
+        const {arrows} = buildPreviewLayers({success: true, rings: [], swaths}, datum, 0, 0);
+        const xs = arrows.features.filter((f) => f.properties?.kind === "swath-arrow").map((f) => {
+            const ring = (f.geometry as GeoJSON.Polygon).coordinates[0];
+            const lon = ring.slice(0, 3).reduce((sum, c) => sum + c[0], 0) / 3;
+            return Math.round(itranspose(0, 0, datum, 52.0, lon)[0]);
+        });
+        expect(new Set(xs).size).toBeGreaterThan(1);
+    });
+
     it("gives a ring shorter than the spacing at least one arrow", () => {
         const res: CoveragePreviewResult = {success: true, rings: [square(1)], swaths: []};
         const arrows = buildPreviewLayers(res, datum, 0, 0).arrows.features.filter((f) => f.properties?.kind === "ring-arrow");
