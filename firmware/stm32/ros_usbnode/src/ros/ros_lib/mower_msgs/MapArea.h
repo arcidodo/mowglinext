@@ -49,6 +49,12 @@ namespace mower_msgs
       _has_ring_direction_type has_ring_direction;
       typedef uint8_t _ring_direction_type;
       _ring_direction_type ring_direction;
+      typedef bool _has_start_point_type;
+      _has_start_point_type has_start_point;
+      typedef double _start_x_type;
+      _start_x_type start_x;
+      typedef double _start_y_type;
+      _start_y_type start_y;
 
     MapArea():
       name(""),
@@ -62,7 +68,10 @@ namespace mower_msgs
       has_mow_angle(0),
       mow_angle_deg(0),
       has_ring_direction(0),
-      ring_direction(0)
+      ring_direction(0),
+      has_start_point(0),
+      start_x(0),
+      start_y(0)
     {
     }
 
@@ -154,6 +163,41 @@ namespace mower_msgs
       offset += sizeof(this->has_ring_direction);
       *(outbuffer + offset + 0) = (this->ring_direction >> (8 * 0)) & 0xFF;
       offset += sizeof(this->ring_direction);
+      union {
+        bool real;
+        uint8_t base;
+      } u_has_start_point;
+      u_has_start_point.real = this->has_start_point;
+      *(outbuffer + offset + 0) = (u_has_start_point.base >> (8 * 0)) & 0xFF;
+      offset += sizeof(this->has_start_point);
+      union {
+        double real;
+        uint64_t base;
+      } u_start_x;
+      u_start_x.real = this->start_x;
+      *(outbuffer + offset + 0) = (u_start_x.base >> (8 * 0)) & 0xFF;
+      *(outbuffer + offset + 1) = (u_start_x.base >> (8 * 1)) & 0xFF;
+      *(outbuffer + offset + 2) = (u_start_x.base >> (8 * 2)) & 0xFF;
+      *(outbuffer + offset + 3) = (u_start_x.base >> (8 * 3)) & 0xFF;
+      *(outbuffer + offset + 4) = (u_start_x.base >> (8 * 4)) & 0xFF;
+      *(outbuffer + offset + 5) = (u_start_x.base >> (8 * 5)) & 0xFF;
+      *(outbuffer + offset + 6) = (u_start_x.base >> (8 * 6)) & 0xFF;
+      *(outbuffer + offset + 7) = (u_start_x.base >> (8 * 7)) & 0xFF;
+      offset += sizeof(this->start_x);
+      union {
+        double real;
+        uint64_t base;
+      } u_start_y;
+      u_start_y.real = this->start_y;
+      *(outbuffer + offset + 0) = (u_start_y.base >> (8 * 0)) & 0xFF;
+      *(outbuffer + offset + 1) = (u_start_y.base >> (8 * 1)) & 0xFF;
+      *(outbuffer + offset + 2) = (u_start_y.base >> (8 * 2)) & 0xFF;
+      *(outbuffer + offset + 3) = (u_start_y.base >> (8 * 3)) & 0xFF;
+      *(outbuffer + offset + 4) = (u_start_y.base >> (8 * 4)) & 0xFF;
+      *(outbuffer + offset + 5) = (u_start_y.base >> (8 * 5)) & 0xFF;
+      *(outbuffer + offset + 6) = (u_start_y.base >> (8 * 6)) & 0xFF;
+      *(outbuffer + offset + 7) = (u_start_y.base >> (8 * 7)) & 0xFF;
+      offset += sizeof(this->start_y);
       return offset;
     }
 
@@ -266,11 +310,49 @@ namespace mower_msgs
       offset += sizeof(this->has_ring_direction);
       this->ring_direction =  ((uint8_t) (*(inbuffer + offset)));
       offset += sizeof(this->ring_direction);
+      union {
+        bool real;
+        uint8_t base;
+      } u_has_start_point;
+      u_has_start_point.base = 0;
+      u_has_start_point.base |= ((uint8_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      this->has_start_point = u_has_start_point.real;
+      offset += sizeof(this->has_start_point);
+      union {
+        double real;
+        uint64_t base;
+      } u_start_x;
+      u_start_x.base = 0;
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 2))) << (8 * 2);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 3))) << (8 * 3);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 4))) << (8 * 4);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 5))) << (8 * 5);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 6))) << (8 * 6);
+      u_start_x.base |= ((uint64_t) (*(inbuffer + offset + 7))) << (8 * 7);
+      this->start_x = u_start_x.real;
+      offset += sizeof(this->start_x);
+      union {
+        double real;
+        uint64_t base;
+      } u_start_y;
+      u_start_y.base = 0;
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 0))) << (8 * 0);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 1))) << (8 * 1);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 2))) << (8 * 2);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 3))) << (8 * 3);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 4))) << (8 * 4);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 5))) << (8 * 5);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 6))) << (8 * 6);
+      u_start_y.base |= ((uint64_t) (*(inbuffer + offset + 7))) << (8 * 7);
+      this->start_y = u_start_y.real;
+      offset += sizeof(this->start_y);
      return offset;
     }
 
     virtual const char * getType() override { return "mower_msgs/MapArea"; };
-    virtual const char * getMD5() override { return "a97bbfa0885542b4e3e80338328c02e3"; };
+    virtual const char * getMD5() override { return "bde28997f101a4e3df809d1f4eba30fe"; };
 
   };
 

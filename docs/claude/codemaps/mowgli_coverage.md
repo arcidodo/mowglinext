@@ -43,7 +43,19 @@ below predates this change.
   2 cm and folds the heading into [0, 180)); turn-around connectors are deliberately not
   part of it. Nothing is queued and the robot does not move. GUI route `preview_coverage`,
   overlay `useCoveragePreview` + `CoveragePreviewPanel`. Test `test/test_coverage_preview.cpp`.
-- CMake registers `test_coverage_planning`, `test_pivot_joins`, `test_coverage_preview`
+- **Operator-chosen start point.** `planBoustrophedon(..., start_hint)` (optional, default none =
+  bit-for-bit the historical plan) and `PlanCoverage` goal `has_start_point` / `start_x` / `start_y`.
+  The route always starts on the OUTERMOST headland ring: `pickRingClosure` (public, pure) closes
+  every ring on the straight side nearest the hint, at the nearest point kept `max(0.5 m, 2.5 ×
+  min_turn_radius)` clear of both corners (a short side closes at its midpoint) — never on a
+  corner, which is what the field report of 2026-07 (ring-to-ring stalls) forbids; with no hint it
+  is the midpoint of the longest side, exactly as before. With a hint the largest loop of the
+  outermost pass (the perimeter, not a ring round a hole) is moved to `plan.rings[0]`, and
+  `buildContinuousSubPaths(..., pin_first_subpath)` → `orderSubPathsForMinimalTransit(...,
+  pin_first_seed)` stops the seed search moving the first sub-path. Rings off = no ring to start on:
+  the hint is ignored and `PreviewCoverage.start_adjustable` is false. The preview answers with the
+  real `start_x/y` (the snapped point). Tests `test/test_start_point.cpp`.
+- CMake registers `test_coverage_planning`, `test_pivot_joins`, `test_start_point`, `test_coverage_preview`
   and `test_coverage_route`. Run with `colcon test --packages-select mowgli_coverage
   --return-code-on-test-failure`. Local standalone replay against real F2C 3.0.0 passes
   93 tests; it does not exercise the ROS action server or the physical robot.

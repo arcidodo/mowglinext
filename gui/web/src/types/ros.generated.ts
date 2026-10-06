@@ -470,6 +470,9 @@ export type MapArea = {
   mow_angle_deg?: number;
   has_ring_direction?: boolean;
   ring_direction?: number;
+  has_start_point?: boolean;
+  start_x?: number;
+  start_y?: number;
 };
 
 export const enum MapObstacleInfoConstants {

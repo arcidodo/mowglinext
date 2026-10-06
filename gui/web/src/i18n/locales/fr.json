@@ -1777,7 +1777,14 @@
     "savedAreaDescription": "Elles s'appliquent à la prochaine planification de cette zone. Aucun redémarrage nécessaire.",
     "savedRobotWide": "Lignes de tonte globales enregistrées",
     "savedRobotWideRestart": "Redémarrez la pile ROS2 (sur la base, à l'arrêt) pour que le robot utilise le nouvel angle et le nouveau sens.",
-    "saveFailed": "Impossible d'enregistrer les lignes de tonte"
+    "saveFailed": "Impossible d'enregistrer les lignes de tonte",
+    "startPoint": "Point de départ",
+    "startAutomatic": "Automatique : le milieu du plus long côté.",
+    "startCustom": "Vous avez choisi où la tonte commence.",
+    "startHint": "Faites glisser le point vert pour changer où la tonte commence. Elle commence toujours sur le tour le plus extérieur et s'y aligne.",
+    "startReset": "Revenir à l'automatique",
+    "startNeedsRings": "Un point de départ nécessite les tours de périmètre. Sans eux, la tonte commence à la première ligne.",
+    "startMarkerTitle": "Faites glisser pour changer où la tonte commence"
   },
   "mapOffsetPanel": {
     "mapOffset": "Décalage de la carte",

@@ -26,11 +26,22 @@ export type AngleMode = "global" | "auto" | "fixed";
 /** The perimeter winding of one area: the robot-wide setting, or its own 0/1/2. */
 export type DirectionChoice = "global" | RingDirection;
 
+/** A point in the map frame (x east, y north, metres). */
+export interface MapPoint {
+    x: number;
+    y: number;
+}
+
 export interface AreaChoices {
     angleMode: AngleMode;
     /** Meaningful when angleMode is "fixed"; the last fixed value otherwise. */
     angleDeg: number;
     direction: DirectionChoice;
+    /**
+     * Where the route starts: a point the planner snaps onto the OUTERMOST headland ring.
+     * null = the planner's own start.
+     */
+    start: MapPoint | null;
 }
 
 /** The MapArea fields that carry an area's overrides (generated type, all optional). */
@@ -39,6 +50,9 @@ export interface AreaOverrideFields {
     mow_angle_deg?: number;
     has_ring_direction?: boolean;
     ring_direction?: number;
+    has_start_point?: boolean;
+    start_x?: number;
+    start_y?: number;
 }
 
 const asRingDirection = (v: number | undefined): RingDirection =>
@@ -51,6 +65,7 @@ export const choicesFromArea = (area: AreaOverrideFields | undefined): AreaChoic
         angleMode: !area?.has_mow_angle ? "global" : angle < 0 ? "auto" : "fixed",
         angleDeg: area?.has_mow_angle && angle >= 0 ? angle : 0,
         direction: area?.has_ring_direction ? asRingDirection(area.ring_direction) : "global",
+        start: area?.has_start_point ? {x: area.start_x ?? 0, y: area.start_y ?? 0} : null,
     };
 };
 
@@ -59,11 +74,13 @@ export const requestedValues = (
     choices: AreaChoices,
     globalAngleDeg: number,
     globalDirection: number,
-): {mow_angle_deg: number; ring_direction: RingDirection} => ({
+): {mow_angle_deg: number; ring_direction: RingDirection; start: MapPoint | null} => ({
     mow_angle_deg: choices.angleMode === "global"
         ? globalAngleDeg
         : choices.angleMode === "auto" ? MOW_ANGLE_AUTO : choices.angleDeg,
     ring_direction: choices.direction === "global" ? asRingDirection(globalDirection) : choices.direction,
+    // The start point has no robot-wide counterpart: it is per area or the planner's own.
+    start: choices.start,
 });
 
 /** The set_area_coverage_lines body: a flag per value, so "global" clears an override. */
@@ -72,12 +89,19 @@ export const overridesFromChoices = (choices: AreaChoices): Required<AreaOverrid
     mow_angle_deg: choices.angleMode === "global" ? 0 : choices.angleMode === "auto" ? MOW_ANGLE_AUTO : choices.angleDeg,
     has_ring_direction: choices.direction !== "global",
     ring_direction: choices.direction === "global" ? 0 : choices.direction,
+    has_start_point: choices.start !== null,
+    start_x: choices.start?.x ?? 0,
+    start_y: choices.start?.y ?? 0,
 });
+
+const sameStart = (a: MapPoint | null, b: MapPoint | null): boolean =>
+    a === null || b === null ? a === b : Math.abs(a.x - b.x) < 1e-6 && Math.abs(a.y - b.y) < 1e-6;
 
 /** Two choice sets mean the same thing. A stored angle only counts while the mode is "fixed". */
 export const sameChoices = (a: AreaChoices, b: AreaChoices): boolean =>
     a.angleMode === b.angleMode
     && a.direction === b.direction
+    && sameStart(a.start, b.start)
     && (a.angleMode !== "fixed" || a.angleDeg === b.angleDeg);
 
 export interface CoveragePreviewResult {
@@ -91,21 +115,27 @@ export interface CoveragePreviewResult {
     planned_fraction?: number;
     field_area_m2?: number;
     dropped_pieces?: number;
+    /** A headland ring exists, so a start point can be placed (false with the rings off). */
+    start_adjustable?: boolean;
+    /** Where the route really starts: the operator's start point snapped onto the outer ring. */
+    start_x?: number;
+    start_y?: number;
 }
 
 export interface CoveragePreviewLayers {
     /** Rings and swaths as LineStrings; `kind` is "ring" | "swath". */
     lines: FeatureCollection;
     /**
-     * Direction arrowheads (small triangles, drawn to scale in metres so they
-     * need no font or sprite) and one start marker (a Point). `bearing` is
-     * degrees clockwise from north.
+     * Direction arrowheads, small triangles drawn to scale in metres so they
+     * need no font or sprite. `bearing` is degrees clockwise from north.
      */
     arrows: FeatureCollection;
+    /** [lon, lat] of the route's start, for the draggable marker; null when there is none. */
+    startLonLat: [number, number] | null;
 }
 
 const EMPTY: FeatureCollection = {type: "FeatureCollection", features: []};
-export const emptyLayers = (): CoveragePreviewLayers => ({lines: EMPTY, arrows: EMPTY});
+export const emptyLayers = (): CoveragePreviewLayers => ({lines: EMPTY, arrows: EMPTY, startLonLat: null});
 
 /** Keep roughly this many metres between arrows along a ring. */
 export const RING_ARROW_SPACING_M = 8;
@@ -179,8 +209,7 @@ export const effectiveAngleDeg = (requested: number, resolved: number | undefine
  * Turn a preview answer into map layers. Arrows sit on every ring (one per
  * RING_ARROW_SPACING_M of path, at least one) and on a thinned selection of
  * swaths, so the serpentine and the perimeter winding both read at a glance
- * without 100 arrows on a big lawn. The first ring start and first swath start
- * get a "start" marker: that is where the robot begins.
+ * without 100 arrows on a big lawn. `startLonLat` is where the robot begins.
  */
 export const buildPreviewLayers = (
     res: CoveragePreviewResult | undefined,
@@ -250,13 +279,6 @@ export const buildPreviewLayers = (
             const b = loop[1];
             arrows.push(arrow("ring-arrow", {x: (a.x + b.x) / 2, y: (a.y + b.y) / 2}, bearingDeg(b.x - a.x, b.y - a.y)));
         }
-        if (ringIndex === 0) {
-            arrows.push({
-                type: "Feature",
-                properties: {kind: "start"},
-                geometry: {type: "Point", coordinates: toLonLat(pts[0])},
-            });
-        }
     });
 
     const swaths = res.swaths ?? [];
@@ -279,13 +301,20 @@ export const buildPreviewLayers = (
                 {x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t},
                 bearingDeg(b.x - a.x, b.y - a.y)));
         }
-        if (swathIndex === 0 && (res.rings ?? []).length === 0) {
-            arrows.push({type: "Feature", properties: {kind: "start"}, geometry: {type: "Point", coordinates: toLonLat(a)}});
-        }
     });
+
+    // Where the route really starts: the planner reports it (the operator's start point
+    // snapped onto the outer ring); older answers fall back to the first ring point, or
+    // with no ring the first swath start.
+    const firstRing = usable((res.rings ?? [])[0]);
+    const firstSwath = usable((res.swaths ?? [])[0]);
+    const start: XY | undefined = Number.isFinite(res.start_x) && Number.isFinite(res.start_y)
+        ? {x: res.start_x as number, y: res.start_y as number}
+        : firstRing[0] ?? firstSwath[0];
 
     return {
         lines: {type: "FeatureCollection", features: lines},
         arrows: {type: "FeatureCollection", features: arrows},
+        startLonLat: start ? toLonLat(start) : null,
     };
 };

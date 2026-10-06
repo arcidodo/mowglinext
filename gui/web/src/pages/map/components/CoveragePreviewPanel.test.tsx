@@ -17,10 +17,10 @@ const area = (id: string, name: string) => {
 
 const fns = {
     selectArea: vi.fn(), setAngleMode: vi.fn(), setAngleDeg: vi.fn(), setDirection: vi.fn(),
-    reset: vi.fn(), saveArea: vi.fn(), saveRobotWide: vi.fn(), setEnabled: vi.fn(),
+    reset: vi.fn(), saveArea: vi.fn(), saveRobotWide: vi.fn(), setEnabled: vi.fn(), setStart: vi.fn(),
 };
 
-const follow: AreaChoices = {angleMode: 'global', angleDeg: 0, direction: 'global'};
+const follow: AreaChoices = {angleMode: 'global', angleDeg: 0, direction: 'global', start: null};
 
 const makePreview = (over: Partial<Preview> = {}): Preview => {
     const areas = [area('a', 'Front lawn')];
@@ -30,6 +30,7 @@ const makePreview = (over: Partial<Preview> = {}): Preview => {
         area: areas[0],
         hasAreaId: true,
         canEdit: true,
+        startAdjustable: true,
         choices: follow,
         robotWideAngle: -1,
         robotWideDirection: 0,
@@ -96,7 +97,7 @@ describe('coverage preview panel', () => {
     });
 
     it('says an area has its own lines once it overrides something', () => {
-        show(makePreview({choices: {angleMode: 'fixed', angleDeg: 30, direction: 'global'}}));
+        show(makePreview({choices: {angleMode: 'fixed', angleDeg: 30, direction: 'global', start: null}}));
         expect(screen.getByText('This area has its own lines.')).toBeInTheDocument();
     });
 
@@ -160,5 +161,27 @@ describe('coverage preview panel', () => {
         fireEvent.mouseDown(selects[0]);
         fireEvent.click(within(document.body).getByText('Fixed angle', {selector: '.ant-select-item-option-content'}));
         expect(fns.setAngleMode).toHaveBeenCalledWith('fixed');
+    });
+
+    it('says the planner picks the start until the operator chooses one', () => {
+        show(makePreview());
+        expect(screen.getByText('Start point')).toBeInTheDocument();
+        expect(screen.getByText('Automatic: the middle of the longest side.')).toBeInTheDocument();
+        expect(screen.getByText(/Drag the green dot to change where mowing starts/)).toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Back to automatic'})).not.toBeInTheDocument();
+    });
+
+    it('shows a chosen start and lets the operator go back to automatic', () => {
+        show(makePreview({choices: {...follow, start: {x: 3, y: 4}}}));
+        expect(screen.getByText('You chose where mowing starts.')).toBeInTheDocument();
+        fireEvent.click(button('Back to automatic'));
+        expect(fns.setStart).toHaveBeenCalledExactlyOnceWith(null);
+    });
+
+    it('explains why there is no start point to place with the perimeter rounds off', () => {
+        show(makePreview({startAdjustable: false, choices: {...follow, start: {x: 3, y: 4}}}));
+        expect(screen.getByText(/A start point needs the perimeter rounds/)).toBeInTheDocument();
+        expect(screen.queryByText(/Drag the green dot/)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', {name: 'Back to automatic'})).not.toBeInTheDocument();
     });
 });

@@ -25,14 +25,12 @@ describe("buildPreviewLayers", () => {
 
     it("draws a ring as a closed loop and starts it at the first vertex", () => {
         const res: CoveragePreviewResult = {success: true, rings: [square(10)], swaths: []};
-        const {lines, arrows} = buildPreviewLayers(res, datum, 0, 0);
+        const {lines, startLonLat} = buildPreviewLayers(res, datum, 0, 0);
         const ring = lines.features.find((f) => f.properties?.kind === "ring")!;
         const coords = (ring.geometry as GeoJSON.LineString).coordinates;
         expect(coords).toHaveLength(5);
         expect(coords[0]).toEqual(coords[4]);
-        const start = arrows.features.filter((f) => f.properties?.kind === "start");
-        expect(start).toHaveLength(1);
-        expect((start[0].geometry as GeoJSON.Point).coordinates).toEqual(coords[0]);
+        expect(startLonLat).toEqual(coords[0]);
     });
 
     it("points ring arrows along the drive direction", () => {
@@ -64,8 +62,9 @@ describe("buildPreviewLayers", () => {
         const bearings = arrows.features.filter((f) => f.properties?.kind === "swath-arrow").map((f) => f.properties?.bearing);
         expect(bearings[0]).toBeCloseTo(90, 5);
         expect(bearings[1]).toBeCloseTo(270, 5);
-        // With no rings the first swath start is the start marker.
-        expect(arrows.features.some((f) => f.properties?.kind === "start")).toBe(true);
+        // With no rings the route starts at the first swath.
+        const first = (lines.features.find((f) => f.properties?.kind === "swath")!.geometry as GeoJSON.LineString).coordinates[0];
+        expect(buildPreviewLayers(res, datum, 0, 0).startLonLat).toEqual(first);
     });
 
     it("draws each arrowhead as a closed triangle of a readable size", () => {
@@ -147,7 +146,7 @@ describe("effectiveAngleDeg", () => {
 });
 
 describe("per-area choices", () => {
-    const follow: AreaChoices = {angleMode: "global", angleDeg: 0, direction: "global"};
+    const follow: AreaChoices = {angleMode: "global", angleDeg: 0, direction: "global", start: null};
 
     it("an area without overrides follows the robot-wide settings", () => {
         expect(choicesFromArea(undefined)).toEqual(follow);
@@ -158,22 +157,22 @@ describe("per-area choices", () => {
 
     it("reads a fixed angle, auto and a winding from the wire form", () => {
         expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: 35, has_ring_direction: true, ring_direction: 2}))
-            .toEqual({angleMode: "fixed", angleDeg: 35, direction: 2});
+            .toEqual({angleMode: "fixed", angleDeg: 35, direction: 2, start: null});
         expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: -1}).angleMode).toBe("auto");
     });
 
     it("0 degrees and the planner-default winding are real choices", () => {
         expect(choicesFromArea({has_mow_angle: true, mow_angle_deg: 0, has_ring_direction: true, ring_direction: 0}))
-            .toEqual({angleMode: "fixed", angleDeg: 0, direction: 0});
+            .toEqual({angleMode: "fixed", angleDeg: 0, direction: 0, start: null});
     });
 
     it("asks the planner for the robot-wide value unless the area overrides it", () => {
-        expect(requestedValues(follow, 40, 1)).toEqual({mow_angle_deg: 40, ring_direction: 1});
-        expect(requestedValues(follow, -1, 0)).toEqual({mow_angle_deg: -1, ring_direction: 0});
-        expect(requestedValues({angleMode: "fixed", angleDeg: 75, direction: 2}, 40, 1))
-            .toEqual({mow_angle_deg: 75, ring_direction: 2});
+        expect(requestedValues(follow, 40, 1)).toEqual({mow_angle_deg: 40, ring_direction: 1, start: null});
+        expect(requestedValues(follow, -1, 0)).toEqual({mow_angle_deg: -1, ring_direction: 0, start: null});
+        expect(requestedValues({angleMode: "fixed", angleDeg: 75, direction: 2, start: null}, 40, 1))
+            .toEqual({mow_angle_deg: 75, ring_direction: 2, start: null});
         // An area can pin itself to auto even when the robot-wide angle is fixed.
-        expect(requestedValues({angleMode: "auto", angleDeg: 75, direction: "global"}, 40, 0).mow_angle_deg).toBe(-1);
+        expect(requestedValues({angleMode: "auto", angleDeg: 75, direction: "global", start: null}, 40, 0).mow_angle_deg).toBe(-1);
     });
 
     it("an unknown robot-wide winding falls back to the planner default", () => {
@@ -183,21 +182,26 @@ describe("per-area choices", () => {
     it("writes a flag per value, so global clears an override", () => {
         expect(overridesFromChoices(follow)).toEqual({
             has_mow_angle: false, mow_angle_deg: 0, has_ring_direction: false, ring_direction: 0,
+            has_start_point: false, start_x: 0, start_y: 0,
         });
-        expect(overridesFromChoices({angleMode: "fixed", angleDeg: 35, direction: 2})).toEqual({
+        expect(overridesFromChoices({angleMode: "fixed", angleDeg: 35, direction: 2, start: null})).toEqual({
             has_mow_angle: true, mow_angle_deg: 35, has_ring_direction: true, ring_direction: 2,
+            has_start_point: false, start_x: 0, start_y: 0,
         });
-        expect(overridesFromChoices({angleMode: "auto", angleDeg: 35, direction: 0})).toEqual({
+        expect(overridesFromChoices({angleMode: "auto", angleDeg: 35, direction: 0, start: null})).toEqual({
             has_mow_angle: true, mow_angle_deg: -1, has_ring_direction: true, ring_direction: 0,
+            has_start_point: false, start_x: 0, start_y: 0,
         });
     });
 
     it("round-trips through the wire form", () => {
         for (const choices of [
             follow,
-            {angleMode: "fixed", angleDeg: 120, direction: 1},
-            {angleMode: "auto", angleDeg: 0, direction: 0},
-            {angleMode: "fixed", angleDeg: 0, direction: "global"},
+            {angleMode: "fixed", angleDeg: 120, direction: 1, start: null},
+            {angleMode: "auto", angleDeg: 0, direction: 0, start: null},
+            {angleMode: "fixed", angleDeg: 0, direction: "global", start: null},
+            {angleMode: "global", angleDeg: 0, direction: "global", start: {x: 3.25, y: -1.5}},
+            {angleMode: "global", angleDeg: 0, direction: "global", start: {x: 0, y: 0}},
         ] as AreaChoices[]) {
             expect(sameChoices(choicesFromArea(overridesFromChoices(choices)), choices)).toBe(true);
         }
@@ -205,13 +209,41 @@ describe("per-area choices", () => {
 
     it("ignores a leftover fixed angle while the mode is not fixed", () => {
         expect(sameChoices(
-            {angleMode: "global", angleDeg: 10, direction: "global"},
-            {angleMode: "global", angleDeg: 99, direction: "global"},
+            {angleMode: "global", angleDeg: 10, direction: "global", start: null},
+            {angleMode: "global", angleDeg: 99, direction: "global", start: null},
         )).toBe(true);
         expect(sameChoices(
-            {angleMode: "fixed", angleDeg: 10, direction: "global"},
-            {angleMode: "fixed", angleDeg: 11, direction: "global"},
+            {angleMode: "fixed", angleDeg: 10, direction: "global", start: null},
+            {angleMode: "fixed", angleDeg: 11, direction: "global", start: null},
         )).toBe(false);
         expect(sameChoices(follow, {...follow, direction: 0})).toBe(false);
+    });
+
+    it("reads a start point from the wire form, and (0, 0) is a real one", () => {
+        expect(choicesFromArea({has_start_point: true, start_x: 12.5, start_y: -3}).start).toEqual({x: 12.5, y: -3});
+        expect(choicesFromArea({has_start_point: true}).start).toEqual({x: 0, y: 0});
+        // A stored point without its flag means nothing.
+        expect(choicesFromArea({start_x: 5, start_y: 6}).start).toBeNull();
+    });
+
+    it("passes the start point to the planner as is: it has no robot-wide counterpart", () => {
+        const choices: AreaChoices = {...follow, start: {x: 4, y: 5}};
+        expect(requestedValues(choices, 40, 1).start).toEqual({x: 4, y: 5});
+        expect(requestedValues(follow, 40, 1).start).toBeNull();
+    });
+
+    it("writes the start point flag and coordinates, so clearing it leaves nothing behind", () => {
+        expect(overridesFromChoices({...follow, start: {x: 4, y: -5}})).toMatchObject({
+            has_start_point: true, start_x: 4, start_y: -5,
+        });
+        expect(overridesFromChoices(follow)).toMatchObject({has_start_point: false, start_x: 0, start_y: 0});
+    });
+
+    it("a moved start point is a change; the same point is not", () => {
+        const a: AreaChoices = {...follow, start: {x: 1, y: 2}};
+        expect(sameChoices(a, {...follow, start: {x: 1, y: 2}})).toBe(true);
+        expect(sameChoices(a, {...follow, start: {x: 1, y: 2.5}})).toBe(false);
+        expect(sameChoices(a, follow)).toBe(false);
+        expect(sameChoices(follow, follow)).toBe(true);
     });
 });

@@ -2286,6 +2286,9 @@ const docTemplate = `{
                 "has_ring_direction": {
                     "type": "boolean"
                 },
+                "has_start_point": {
+                    "type": "boolean"
+                },
                 "id": {
                     "type": "integer"
                 },
@@ -2312,6 +2315,12 @@ const docTemplate = `{
                 },
                 "ring_direction": {
                     "type": "integer"
+                },
+                "start_x": {
+                    "type": "number"
+                },
+                "start_y": {
+                    "type": "number"
                 }
             }
         },

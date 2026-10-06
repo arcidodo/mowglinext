@@ -232,6 +232,9 @@ type MapArea struct {
 	MowAngleDeg               float64                        `json:"mow_angle_deg"`
 	HasRingDirection          bool                           `json:"has_ring_direction"`
 	RingDirection             uint8                          `json:"ring_direction"`
+	HasStartPoint             bool                           `json:"has_start_point"`
+	StartX                    float64                        `json:"start_x"`
+	StartY                    float64                        `json:"start_y"`
 }
 
 // MapObstacleInfo matches mowgli_interfaces/msg/MapObstacleInfo.
