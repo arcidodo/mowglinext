@@ -55,3 +55,13 @@ float64 mow_angle_deg
 # 2 counter-clockwise (same values as coverage_server.ring_direction).
 bool has_ring_direction
 uint8 ring_direction
+
+# Where the route starts, as a point (map-frame metres) near the OUTERMOST headland
+# ring: the planner snaps it onto that ring, on a straight side, and the route
+# always begins there, so the outermost ring is driven first. Opt-in like the two
+# above: has_start_point false = the planner's own start (the midpoint of the
+# longest side of the outermost ring). Meaningless with the headland rings off.
+# Re-projected with the polygon when the datum changes.
+bool has_start_point
+float64 start_x
+float64 start_y

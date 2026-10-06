@@ -23,6 +23,7 @@ export const CoveragePreviewPanel = ({preview, areaLabel, resumeAvailable = fals
     const {t} = useTranslation();
     const {
         areas, area, selectArea, hasAreaId, canEdit, choices, setAngleMode, setAngleDeg, setDirection,
+        setStart, startAdjustable,
         robotWideAngle, robotWideDirection, shownAngle, dirty, differsFromRobotWide, reset, saveArea,
         saveRobotWide, saving, loading, error, result,
     } = preview;
@@ -122,6 +123,19 @@ export const CoveragePreviewPanel = ({preview, areaLabel, resumeAvailable = fals
                     {value: RING_DIRECTION.counterClockwise, label: t('coveragePreview.directionCounterClockwise')},
                 ]}
             />
+
+            <span style={label}>{t('coveragePreview.startPoint')}</span>
+            <div style={stat}>
+                {!startAdjustable
+                    ? t('coveragePreview.startNeedsRings')
+                    : choices.start ? t('coveragePreview.startCustom') : t('coveragePreview.startAutomatic')}
+            </div>
+            {startAdjustable && <div style={{...stat, marginTop: 2}}>{t('coveragePreview.startHint')}</div>}
+            {startAdjustable && choices.start && (
+                <Button size="small" type="link" style={{padding: 0}} onClick={() => setStart(null)}>
+                    {t('coveragePreview.startReset')}
+                </Button>
+            )}
 
             <div style={{marginTop: 10, minHeight: 36}}>
                 {loading && <div style={stat}>{t('coveragePreview.calculating')}</div>}

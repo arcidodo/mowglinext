@@ -3234,6 +3234,9 @@ PlanCoverageArea::PlanCoverage::Goal PlanCoverageArea::buildGoal(
   goal.mow_angle_deg = lines.mow_angle_deg;
   goal.override_ring_direction = lines.override_ring_direction;
   goal.ring_direction = lines.ring_direction;
+  goal.has_start_point = lines.has_start_point;
+  goal.start_x = lines.start_x;
+  goal.start_y = lines.start_y;
   auto ctx = config().blackboard->get<std::shared_ptr<BTContext>>("context");
   uint32_t area_index = 0;
   getInput<uint32_t>("area_index", area_index);

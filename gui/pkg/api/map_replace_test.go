@@ -295,6 +295,23 @@ func TestReplaceMap_PassesAnAreasCoverageLinesToMapServer(t *testing.T) {
 	assert.True(t, srv.live[0].Area.HasRingDirection)
 }
 
+func TestReplaceMap_RollbackKeepsAnAreasStartPoint(t *testing.T) {
+	old := testArea("old", 7)
+	old.Area.HasStartPoint = true
+	old.Area.StartX = 4.5
+	old.Area.StartY = -1.25
+	srv := newFakeMapServer(old)
+	srv.failNth(mapServiceAddArea, 1, errDeadline)
+
+	err := replaceMapInternal(context.Background(), srv, &mowgli.ReplaceMapReq{Areas: []mowgli.ReplaceMapArea{testArea("new", 0)}})
+
+	require.Error(t, err)
+	require.Len(t, srv.live, 1)
+	assert.True(t, srv.live[0].Area.HasStartPoint, "a failed save must not reset where the route starts")
+	assert.Equal(t, 4.5, srv.live[0].Area.StartX)
+	assert.Equal(t, -1.25, srv.live[0].Area.StartY)
+}
+
 func TestReplaceMap_SerializesConcurrentReplacementThroughRollback(t *testing.T) {
 	server := newBarrierMapServer(testArea("old", 1))
 	requestA := &mowgli.ReplaceMapReq{Areas: []mowgli.ReplaceMapArea{testArea("a1", 0), testArea("a2", 0)}}

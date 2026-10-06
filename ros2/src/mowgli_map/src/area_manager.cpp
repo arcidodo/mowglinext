@@ -106,6 +106,20 @@ geometry_msgs::msg::Polygon MapServerNode::parse_polygon_string(const std::strin
   return poly;
 }
 
+namespace
+{
+std::vector<std::pair<double, double>> polygon_pairs(const geometry_msgs::msg::Polygon& polygon)
+{
+  std::vector<std::pair<double, double>> pairs;
+  pairs.reserve(polygon.points.size());
+  for (const auto& pt : polygon.points)
+  {
+    pairs.emplace_back(static_cast<double>(pt.x), static_cast<double>(pt.y));
+  }
+  return pairs;
+}
+}  // namespace
+
 void MapServerNode::load_areas_from_params()
 {
   // Declare area parameter arrays with empty defaults.
@@ -496,10 +510,30 @@ void MapServerNode::on_add_area(const mowgli_interfaces::srv::AddMowingArea::Req
     const auto check = CheckCoverageLines(req->area.has_mow_angle,
                                           req->area.mow_angle_deg,
                                           req->area.has_ring_direction,
-                                          req->area.ring_direction);
+                                          req->area.ring_direction,
+                                          req->area.has_start_point,
+                                          req->area.start_x,
+                                          req->area.start_y);
     if (check.ok)
     {
       entry.coverage_lines = check.lines;
+      // A start point that no longer lies near the (possibly reshaped) area is dropped
+      // on its own: the angle and winding stay.
+      if (entry.coverage_lines.has_start_point &&
+          !StartPointNearPolygon(polygon_pairs(polygon_msg),
+                                 entry.coverage_lines.start_x,
+                                 entry.coverage_lines.start_y))
+      {
+        RCLCPP_WARN(
+            get_logger(),
+            "AddArea('%s'): dropping the start point (%.2f, %.2f), it is not near the area.",
+            entry.name.c_str(),
+            entry.coverage_lines.start_x,
+            entry.coverage_lines.start_y);
+        entry.coverage_lines.has_start_point = false;
+        entry.coverage_lines.start_x = 0.0;
+        entry.coverage_lines.start_y = 0.0;
+      }
     }
     else
     {
@@ -648,7 +682,10 @@ void MapServerNode::on_set_area_coverage_lines(
   const auto check = CheckCoverageLines(req->has_mow_angle,
                                         req->mow_angle_deg,
                                         req->has_ring_direction,
-                                        req->ring_direction);
+                                        req->ring_direction,
+                                        req->has_start_point,
+                                        req->start_x,
+                                        req->start_y);
   if (!check.ok)
   {
     res->success = false;
@@ -679,6 +716,17 @@ void MapServerNode::on_set_area_coverage_lines(
     {
       res->success = false;
       res->message = "navigation areas are not mowed, so they have no coverage lines";
+      RCLCPP_WARN(get_logger(), "set_area_coverage_lines: %s", res->message.c_str());
+      return;
+    }
+    // The start point must belong to THIS area. Refused rather than dropped: the operator
+    // asked for it, so silently ignoring it would look like it worked.
+    if (check.lines.has_start_point && !StartPointNearPolygon(polygon_pairs(it->polygon),
+                                                              check.lines.start_x,
+                                                              check.lines.start_y))
+    {
+      res->success = false;
+      res->message = "the start point is not near this area";
       RCLCPP_WARN(get_logger(), "set_area_coverage_lines: %s", res->message.c_str());
       return;
     }
@@ -748,6 +796,9 @@ void MapServerNode::on_get_mowing_area(
     res->area.mow_angle_deg = entry.coverage_lines.mow_angle_deg;
     res->area.has_ring_direction = entry.coverage_lines.has_ring_direction;
     res->area.ring_direction = entry.coverage_lines.ring_direction;
+    res->area.has_start_point = entry.coverage_lines.has_start_point;
+    res->area.start_x = entry.coverage_lines.start_x;
+    res->area.start_y = entry.coverage_lines.start_y;
 
     // `obstacles` holds APPLIED keepouts only — it is what PlanCoverageArea
     // turns into coverage holes, so a PENDING proposal must never appear in
@@ -2022,6 +2073,18 @@ void MapServerNode::save_areas_to_file(const std::string& path, bool allow_empty
       out << "area_" << i
           << "_ring_direction: " << static_cast<int>(area.coverage_lines.ring_direction) << "\n";
     }
+    if (area.coverage_lines.has_start_point)
+    {
+      // Metres to the millimetre: the file's default 6 significant digits would round a
+      // coordinate like 123.4567 m to 123.457 and the start would drift on every cycle.
+      const auto old_flags = out.flags();
+      const auto old_precision = out.precision();
+      out << std::fixed << std::setprecision(3) << "area_" << i
+          << "_start_x: " << area.coverage_lines.start_x << "\n"
+          << "area_" << i << "_start_y: " << area.coverage_lines.start_y << "\n";
+      out.flags(old_flags);
+      out.precision(old_precision);
+    }
     // PENDING obstacles (wheel-slip dig proposals) are deliberately NOT
     // written: they are inert until the operator accepts them through
     // ~/promote_obstacle. Count only what we actually write, and keep the
@@ -2191,15 +2254,34 @@ void MapServerNode::load_areas_from_file(const std::string& path)
     {
       const bool has_angle = kv.count(prefix + "_mow_angle_deg") != 0;
       const bool has_dir = kv.count(prefix + "_ring_direction") != 0;
+      // A start point needs BOTH coordinates; one without the other is ignored.
+      const bool has_start =
+          kv.count(prefix + "_start_x") != 0 && kv.count(prefix + "_start_y") != 0;
       const auto check =
           CheckCoverageLines(has_angle,
                              has_angle ? get_double(prefix + "_mow_angle_deg", 0.0) : 0.0,
                              has_dir,
                              static_cast<uint8_t>(
-                                 std::clamp(get_int(prefix + "_ring_direction", 0), 0, 255)));
+                                 std::clamp(get_int(prefix + "_ring_direction", 0), 0, 255)),
+                             has_start,
+                             has_start ? get_double(prefix + "_start_x", 0.0) : 0.0,
+                             has_start ? get_double(prefix + "_start_y", 0.0) : 0.0);
       if (check.ok)
       {
         entry.coverage_lines = check.lines;
+        if (entry.coverage_lines.has_start_point &&
+            !StartPointNearPolygon(polygon_pairs(entry.polygon),
+                                   entry.coverage_lines.start_x,
+                                   entry.coverage_lines.start_y))
+        {
+          RCLCPP_WARN(get_logger(),
+                      "Area '%s': ignoring a start point that is not near the area in %s.",
+                      entry.name.c_str(),
+                      path.c_str());
+          entry.coverage_lines.has_start_point = false;
+          entry.coverage_lines.start_x = 0.0;
+          entry.coverage_lines.start_y = 0.0;
+        }
       }
       else
       {
@@ -2411,6 +2493,18 @@ void MapServerNode::migrate_areas_datum(double file_datum_lat,
     for (auto& obstacle : area.obstacles)
     {
       reproject_polygon(obstacle.polygon);
+    }
+    // The operator's start point is a map-frame coordinate like any polygon vertex: it
+    // must move with the map, or after a datum change it points at the wrong side of the
+    // garden and the route starts somewhere the operator never chose.
+    if (area.coverage_lines.has_start_point)
+    {
+      wgs84::ReprojectEnu(file_datum_lat,
+                          file_datum_lon,
+                          datum_lat_,
+                          datum_lon_,
+                          area.coverage_lines.start_x,
+                          area.coverage_lines.start_y);
     }
   }
   // LidarIgnoreCorridor polylines are map-frame metres anchored to the same

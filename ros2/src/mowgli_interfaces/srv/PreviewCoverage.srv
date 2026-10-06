@@ -20,6 +20,9 @@ geometry_msgs/Polygon[] obstacles       # interior holes (>= 3 points each)
 float64 mow_angle_deg                   # swath heading in the map frame; < 0 = auto (minimise swath count)
 bool perpendicular                      # rotate the resolved swath angle 90 degrees (cross-hatch)
 int32 ring_direction                    # perimeter winding: 0 planner default, 1 clockwise, 2 counter-clockwise; < 0 = use the live ring_direction parameter
+bool has_start_point                    # false = the planner's own start (midpoint of the longest side of the outermost ring)
+float64 start_x                         # map-frame metres; snapped onto the OUTERMOST headland ring (nearest point on a straight side); read only when has_start_point
+float64 start_y
 ---
 # Response
 bool success
@@ -32,3 +35,6 @@ int32 ring_direction                    # winding actually applied: 0 / 1 / 2
 float64 planned_fraction                # planned coverage as a fraction of the field area, [0, 1]
 float64 field_area_m2
 uint32 dropped_pieces                   # slivers / tiny rings the planner discarded
+bool start_adjustable                   # true when the plan has a headland ring, i.e. a start point can be placed; false with the rings off
+float64 start_x                         # where the route actually starts (map frame): the first point of the outermost ring (the first swath start with no rings)
+float64 start_y

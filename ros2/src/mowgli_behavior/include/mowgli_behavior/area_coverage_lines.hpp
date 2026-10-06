@@ -27,6 +27,9 @@
 //     override" and coverage_server falls back to its live ring_direction
 //     parameter, as before.
 //
+//   * start point: the operator's start point when the area has one, else none — the
+//     planner then starts where it always did. It always starts on the outermost ring.
+//
 // A value that cannot be right (a NaN / out-of-range angle, an unknown winding)
 // is ignored and the robot-wide setting applies — a corrupt
 // override must never turn into a plan the operator never asked for.
@@ -50,6 +53,11 @@ struct CoverageLineChoice
   bool override_ring_direction{false};
   /// 0 planner default / 1 clockwise / 2 counter-clockwise; meaningful only when overriding.
   int32_t ring_direction{0};
+  /// The operator chose where the route starts: a map-frame point the planner snaps onto the
+  /// OUTERMOST headland ring. false = the planner's own start.
+  bool has_start_point{false};
+  double start_x{0.0};
+  double start_y{0.0};
 };
 
 [[nodiscard]] inline CoverageLineChoice ResolveCoverageLines(
@@ -66,6 +74,15 @@ struct CoverageLineChoice
   {
     choice.override_ring_direction = true;
     choice.ring_direction = area.ring_direction;
+  }
+  // A start point is passed through only when it is a real pair of coordinates: a NaN
+  // would otherwise reach the planner, which treats it as no hint, but the BT should not
+  // depend on that.
+  if (area.has_start_point && std::isfinite(area.start_x) && std::isfinite(area.start_y))
+  {
+    choice.has_start_point = true;
+    choice.start_x = area.start_x;
+    choice.start_y = area.start_y;
   }
   return choice;
 }
