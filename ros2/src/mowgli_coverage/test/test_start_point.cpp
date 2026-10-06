@@ -143,13 +143,57 @@ TEST(PickRingClosure, TheClearanceGrowsWithTheTurningRadius)
     EXPECT_GE(dist(c.point, corner), 1.0 - 1e-9);
 }
 
-TEST(PickRingClosure, ASideTooShortToLeaveRoomClosesAtItsMidpoint)
+TEST(PickRingClosure, ASideTooShortToBeARealSideIsSkippedForALongOne)
 {
+  // The 0.8 m end of a thin strip is not a place to close a ring on: the nearest REAL side
+  // (the 10 m one) takes it, kept clear of the corner.
   const Ring thin = {{0, 0}, {10, 0}, {10, 0.8}, {0, 0.8}};
   const RingClosure c = pickRingClosure(thin, Hint{{10.2, 0.1}}, 0.2);
+  EXPECT_EQ(c.edge, 0u);
+  EXPECT_NEAR(c.point.first, 9.5, 1e-9);
+  EXPECT_DOUBLE_EQ(c.point.second, 0.0);
+}
+
+TEST(PickRingClosure, ASideOfAtLeastAMetreIsRealButTooShortToLeaveRoomClosesAtItsMidpoint)
+{
+  const Ring pad = {{0, 0}, {1.0, 0}, {1.0, 1.0}, {0, 1.0}};  // every side exactly 1 m
+  const RingClosure c = pickRingClosure(pad, Hint{{1.2, 0.2}}, 0.2);
   EXPECT_EQ(c.edge, 1u);
-  EXPECT_DOUBLE_EQ(c.point.first, 10.0);
-  EXPECT_NEAR(c.point.second, 0.4, 1e-9);
+  EXPECT_DOUBLE_EQ(c.point.first, 1.0);
+  EXPECT_NEAR(c.point.second, 0.5, 1e-9);
+}
+
+TEST(PickRingClosure, ARoundedCornerIsNotASideToCloseOn)
+{
+  // F2C's outermost ring has rounded corners: tiny sides round each corner. A hint right at
+  // the corner must still close on a long side, well clear of the corner.
+  const Ring rounded = {{0.1, 0.0},
+                        {19.9, 0.0},
+                        {20.0, 0.1},
+                        {20.0, 19.9},
+                        {19.9, 20.0},
+                        {0.1, 20.0},
+                        {0.0, 19.9},
+                        {0.0, 0.1}};
+  const RingClosure c = pickRingClosure(rounded, Hint{{20.0, 20.0}}, 0.2);
+  EXPECT_TRUE(c.edge == 2u || c.edge == 4u) << "closed on side " << c.edge;
+  EXPECT_GE(dist(c.point, {20.0, 20.0}), 0.5);
+  for (const Point& v : rounded)
+    EXPECT_GE(dist(c.point, v), 0.4) << "the closure must be clear of every corner vertex";
+}
+
+TEST(PickRingClosure, ASmoothCurveOfShortSidesStillClosesNearTheHint)
+{
+  // A hand-drawn curve made of 0.3 m sides has no real straight side: every side
+  // qualifies, and the closure lands next to the hint.
+  Ring circle;
+  for (int i = 0; i < 100; ++i)
+  {
+    const double a = 2.0 * M_PI * i / 100.0;
+    circle.emplace_back(5.0 * std::cos(a), 5.0 * std::sin(a));
+  }
+  const RingClosure c = pickRingClosure(circle, Hint{{6.0, 0.0}}, 0.2);
+  EXPECT_LT(dist(c.point, {5.0, 0.0}), 0.4);
 }
 
 TEST(PickRingClosure, AHintEquidistantFromTwoSidesTakesTheLowerIndex)

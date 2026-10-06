@@ -1164,12 +1164,30 @@ RingClosure pickRingClosure(const std::vector<std::pair<double, double>>& open_l
     return out;
   }
 
-  // The side nearest the hint (distance to the SEGMENT, lowest index on a tie).
+  // A closure may only sit on a REAL side. F2C's outermost ring has rounded corners, which
+  // arrive as chains of tiny sides: a hint at a corner would otherwise pick one of those, and
+  // the ring would close ON the corner — exactly what this function exists to avoid. So sides
+  // shorter than min_side are skipped (the longest side always qualifies). A loop made only of
+  // short sides (a smooth, hand-drawn curve) keeps every side that is at least half the longest.
+  double longest = 0.0;
+  for (std::size_t j = 0; j < n; ++j)
+  {
+    const auto& a = open_loop[j];
+    const auto& b = side_end(j);
+    longest = std::max(longest, std::hypot(b.first - a.first, b.second - a.second));
+  }
+  const double min_side = std::min(1.0, 0.5 * longest);
+
+  // The nearest such side (distance to the SEGMENT, lowest index on a tie).
   double best = std::numeric_limits<double>::infinity();
   for (std::size_t j = 0; j < n; ++j)
   {
     const auto& a = open_loop[j];
     const auto& b = side_end(j);
+    if (std::hypot(b.first - a.first, b.second - a.second) < min_side)
+    {
+      continue;
+    }
     const double dx = b.first - a.first;
     const double dy = b.second - a.second;
     const double len2 = dx * dx + dy * dy;
