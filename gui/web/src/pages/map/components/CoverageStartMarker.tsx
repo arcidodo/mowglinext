@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from "react";
+import {memo, useState} from "react";
 import {Marker} from "react-map-gl/mapbox";
 import {nearestOnPolyline} from "../coveragePreview.ts";
 
@@ -27,26 +27,31 @@ type LngLat = [number, number];
 ///  * The planner has the last word: it keeps the start on a straight side, clear of the
 ///    corners, and answers with the real start, which the marker then moves to.
 /// Move is reported on DROP only, so the planner is asked once per placement, not per pixel.
-export const CoverageStartMarker = ({
+const CoverageStartMarkerImpl = ({
     longitude, latitude, ring, settledCount, onMove, title,
 }: CoverageStartMarkerProps) => {
     // Where the marker was dropped, until the planner's answer (or a new start) replaces it.
     const [dropped, setDropped] = useState<{at: LngLat; settledAtDrop: number; reported: LngLat} | null>(null);
-    const ringRef = useRef(ring);
-    ringRef.current = ring;
+    // Where the marker is while it is being dragged. react-map-gl's Marker puts the marker back
+    // at its `longitude`/`latitude` props on EVERY render, and this page re-renders constantly
+    // (robot pose, map streams): without this the dot snapped back to the old start in the middle
+    // of a drag and then to the pointer again, which looked like stuttering. Rendering from this
+    // keeps the marker where the drag put it, whatever else re-renders it.
+    const [live, setLive] = useState<LngLat | null>(null);
 
-    useEffect(() => {
-        if (!dropped) return;
-        const answered = settledCount > dropped.settledAtDrop;
-        const startMoved = dropped.reported[0] !== longitude || dropped.reported[1] !== latitude;
-        if (answered || startMoved) setDropped(null);
-    }, [dropped, settledCount, longitude, latitude]);
+    // The dropped spot only counts until the planner has answered or the start has moved on. Decided
+    // while rendering (it only ever becomes invalid: the answer counter just goes up), so there is no
+    // effect that has to clear it.
+    const held = dropped
+        && settledCount <= dropped.settledAtDrop
+        && dropped.reported[0] === longitude
+        && dropped.reported[1] === latitude
+        ? dropped
+        : null;
 
-    const snap = (lngLat: LngLat): LngLat => (ringRef.current && ringRef.current.length > 1
-        ? nearestOnPolyline(ringRef.current, lngLat)
-        : lngLat);
+    const snap = (lngLat: LngLat): LngLat => (ring && ring.length > 1 ? nearestOnPolyline(ring, lngLat) : lngLat);
 
-    const shown = dropped?.at ?? [longitude, latitude];
+    const shown = live ?? held?.at ?? [longitude, latitude];
 
     return (
         <Marker
@@ -54,14 +59,17 @@ export const CoverageStartMarker = ({
             latitude={shown[1]}
             anchor="center"
             draggable
+            onDragStart={() => setLive([shown[0], shown[1]])}
             onDrag={(event) => {
-                // Keep the marker on the ring while it is being dragged. No state here: a
-                // re-render mid-drag would fight the drag itself.
+                // Keep the marker on the ring while it is being dragged. The marker is set
+                // directly as well, so it follows at once without waiting for a render.
                 const on = snap([event.lngLat.lng, event.lngLat.lat]);
+                setLive(on);
                 event.target.setLngLat(on);
             }}
             onDragEnd={(event) => {
                 const on = snap([event.lngLat.lng, event.lngLat.lat]);
+                setLive(null);
                 setDropped({at: on, settledAtDrop: settledCount, reported: [longitude, latitude]});
                 onMove(on[0], on[1]);
             }}
@@ -94,3 +102,17 @@ export const CoverageStartMarker = ({
         </Marker>
     );
 };
+
+// The page re-renders many times a second. The marker only has to render when its inputs change
+// (a render during a drag is harmless thanks to `live`, but pointless work). onMove is compared
+// too: it converts the dropped point with the current map offset, so a stale one would place the
+// start wrongly.
+export const CoverageStartMarker = memo(
+    CoverageStartMarkerImpl,
+    (a, b) => a.longitude === b.longitude
+        && a.latitude === b.latitude
+        && a.ring === b.ring
+        && a.settledCount === b.settledCount
+        && a.onMove === b.onMove
+        && a.title === b.title,
+);
