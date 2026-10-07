@@ -48,6 +48,7 @@ import {useCoveragePreview} from "./map/hooks/useCoveragePreview.ts";
 import {useCoverageResumeAvailable} from "../hooks/useCoverageResumeAvailable.ts";
 import {CoveragePreviewPanel} from "./map/components/CoveragePreviewPanel.tsx";
 import {CoverageStartMarker} from "./map/components/CoverageStartMarker.tsx";
+import type {AreaOverrideFields} from "./map/coveragePreview.ts";
 import {calculateMapViewportBounds} from "./map/utils/mapViewport.ts";
 
 // Distinct from the red drawn-obstacle fill, so the toggleable
@@ -928,6 +929,18 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         (): MowingAreaFeature[] => Object.values(features).filter((f): f is MowingAreaFeature => f instanceof MowingAreaFeature),
         [features],
     );
+    // An edit of an area's mowing lines goes into the edit session like moving a polygon corner,
+    // so it is saved by Save map (which round-trips these fields), dropped by Cancel, and covered
+    // by undo/redo (the snapshots carry the area). A NEW area object replaces the old one: that is
+    // the same object the server map data holds, and changing it would survive a Cancel.
+    const commitCoverageLines = useCallback((featureId: string, overrides: Required<AreaOverrideFields>) => {
+        setFeatures((old) => {
+            const feature = old[featureId];
+            if (!(feature instanceof MowingAreaFeature) || !feature.area) return old;
+            feature.area = {...feature.area, ...overrides};
+            return {...old};
+        });
+    }, []);
     const coveragePreview = useCoveragePreview({
         areas: mowingAreaFeaturesList,
         obstacles: obstacleFeaturesList,
@@ -937,9 +950,11 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
         globalAngleDeg: Number(settings.mow_angle_deg ?? -1),
         globalDirection: Number(settings.mow_direction ?? 0),
         preferredAreaId: editMap ? selectedFeatureIds[0] : undefined,
-        // Idle only: an area's lines change its NEXT plan, and a mow in progress
-        // re-plans on resume. Fail closed until the first status frame arrives.
-        canEdit: highLevelStatus.highLevelStatus.state === 1,
+        // The lines can only be changed while the map is edited, and are then part of that
+        // edit: Save map keeps them, Cancel and undo drop them.
+        editMode: editMap,
+        onCommit: commitCoverageLines,
+        savedAreas: map?.working_area,
     });
     const coverageResumeAvailable = useCoverageResumeAvailable();
     const coveragePreviewAreaLabel = (index: number, name: string) =>
@@ -1759,6 +1774,7 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                                     latitude={coveragePreview.startLonLat[1]}
                                     ring={coveragePreview.outerRingLonLat}
                                     settledCount={coveragePreview.settledCount}
+                                    draggable={editMap}
                                     onMove={coveragePreview.moveStartTo}
                                     title={t('coveragePreview.startMarkerTitle')}
                                 />
@@ -1892,15 +1908,17 @@ export const MapPage: React.FC<{compact?: boolean}> = ({compact = false}) => {
                 {/* Mobile: obstacle proposals need an accept/reject surface too — the
                     operator is usually standing next to the robot with a phone. The
                     mobile toolbar lives at the bottom, so this card takes the top. */}
-                {isMobile && !editMap && (obstacleProposals.length > 0 || coveragePreview.enabled) && (
+                {isMobile && ((!editMap && obstacleProposals.length > 0) || coveragePreview.enabled) && (
                     <div style={{position: 'absolute', top: 12, left: 12, right: 12, zIndex: 10, maxHeight: '45%', overflowY: 'auto', background: colors.glassBackground, borderRadius: 14, border: colors.glassBorder, boxShadow: colors.glassShadow}}>
-                        <ObstacleProposalsPanel
-                            proposals={obstacleProposals}
-                            selectedProposalId={selectedProposalId}
-                            onHoverProposal={setSelectedProposalId}
-                        />
+                        {!editMap && (
+                            <ObstacleProposalsPanel
+                                proposals={obstacleProposals}
+                                selectedProposalId={selectedProposalId}
+                                onHoverProposal={setSelectedProposalId}
+                            />
+                        )}
                         {coveragePreview.enabled && (
-                            <div style={{borderTop: obstacleProposals.length > 0 ? `1px solid ${colors.borderSubtle}` : undefined}}>
+                            <div style={{borderTop: !editMap && obstacleProposals.length > 0 ? `1px solid ${colors.borderSubtle}` : undefined}}>
                                 <CoveragePreviewPanel preview={coveragePreview} areaLabel={coveragePreviewAreaLabel} resumeAvailable={coverageResumeAvailable}/>
                             </div>
                         )}
