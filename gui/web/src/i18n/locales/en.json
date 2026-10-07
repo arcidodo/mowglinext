@@ -1790,6 +1790,17 @@
     "startNeedsRings": "A start point needs the perimeter rounds. Without them mowing starts at the first line.",
     "startMarkerTitle": "Drag to move where mowing starts"
   },
+  "mapSidebar": {
+    "collapse": "collapse",
+    "expand": "expand",
+    "obstacles": "Obstacles",
+    "drawnObstacles": "Drawn obstacles ({{count}})",
+    "noObstacles": "No obstacles detected and no proposals waiting.",
+    "mowingLines": "Mowing lines",
+    "mowingLinesOff": "Shows how the robot will mow an area, so you can try an angle or direction before it mows.",
+    "mowingLinesShow": "Show mowing lines",
+    "noAreas": "Draw a mowing area first."
+  },
   "mapOffsetPanel": {
     "mapOffset": "Map Offset",
     "mapRotation": "Map Rotation",
