@@ -2280,23 +2280,11 @@ const docTemplate = `{
                 "area": {
                     "$ref": "#/definitions/geometry.Polygon"
                 },
-                "has_mow_angle": {
-                    "type": "boolean"
-                },
-                "has_ring_direction": {
-                    "type": "boolean"
-                },
-                "has_start_point": {
-                    "type": "boolean"
-                },
                 "id": {
                     "type": "integer"
                 },
                 "is_navigation_area": {
                     "type": "boolean"
-                },
-                "mow_angle_deg": {
-                    "type": "number"
                 },
                 "name": {
                     "type": "string"
@@ -2312,15 +2300,6 @@ const docTemplate = `{
                     "items": {
                         "$ref": "#/definitions/geometry.Polygon"
                     }
-                },
-                "ring_direction": {
-                    "type": "integer"
-                },
-                "start_x": {
-                    "type": "number"
-                },
-                "start_y": {
-                    "type": "number"
                 }
             }
         },

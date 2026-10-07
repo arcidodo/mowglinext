@@ -31,7 +31,6 @@ import {
     ThunderboltOutlined,
     ImportOutlined,
     CheckOutlined,
-    BarsOutlined,
     ExpandOutlined,
 } from "@ant-design/icons";
 import type {MenuInfo} from "rc-menu/lib/interface";
@@ -64,8 +63,6 @@ interface MapToolbarMobileProps {
     onToggleSatellite: () => void;
     showObstacleClearance?: boolean;
     onToggleObstacleClearance?: () => void;
-    showCoveragePreview?: boolean;
-    onToggleCoveragePreview?: () => void;
     onManualMode: () => Promise<void>;
     onStopManualMode: () => Promise<void>;
     onBackupMap: () => void;
@@ -121,7 +118,6 @@ export const MapToolbarMobile = ({
     historyIndex, editHistoryLength, mowingAreas,
     onEditMap, onSaveMap, onRestoreBackup, onUndo, onRedo, onToggleSatellite,
     showObstacleClearance = false, onToggleObstacleClearance,
-    showCoveragePreview = false, onToggleCoveragePreview,
     onManualMode, onStopManualMode,
     onBackupMap, onRestoreMap, onDownloadGeoJSON, onUploadGeoJSON, onImportOpenMower, onResetMowingProgress,
     onMowArea, selectedFeatureCount = 0, onEditSelectedFeature,
@@ -226,13 +222,6 @@ export const MapToolbarMobile = ({
                     label: showObstacleClearance ? t("mapToolbarMobile.hideObstacleClearance") : t("mapToolbarMobile.showObstacleClearance"),
                 } satisfies NonNullable<MenuProps["items"]>[number]]
                 : []),
-            ...(onToggleCoveragePreview
-                ? [{
-                    key: "coveragePreview",
-                    icon: <BarsOutlined />,
-                    label: showCoveragePreview ? t("mapToolbarMobile.hideCoveragePreview") : t("mapToolbarMobile.showCoveragePreview"),
-                } satisfies NonNullable<MenuProps["items"]>[number]]
-                : []),
             {
                 key: "mowerAppearance",
                 label: t("mapToolbar.mowerAppearance"),
@@ -299,7 +288,6 @@ export const MapToolbarMobile = ({
             case "emergencyOff": safeCall(onEmergencyOff); break;
             case "satellite": onToggleSatellite(); break;
             case "obstacleClearance": onToggleObstacleClearance?.(); break;
-            case "coveragePreview": onToggleCoveragePreview?.(); break;
             case "areaRecording": safeCall(onAreaRecording); break;
             case "continueOrPause": safeCall(onContinueOrPause); break;
             case "bladeForward": safeCall(onBladeForward); break;
