@@ -10,15 +10,17 @@ type MarkerProps = {
     latitude: number;
     draggable?: boolean;
     anchor?: string;
+    onDragStart?: () => void;
     onDrag?: (event: DragEvent) => void;
     onDragEnd?: (event: DragEvent) => void;
 };
 
-const seen = vi.hoisted(() => ({props: null as null | MarkerProps}));
+const seen = vi.hoisted(() => ({props: null as null | MarkerProps, renders: 0}));
 
 vi.mock("react-map-gl/mapbox", () => ({
     Marker: (props: MarkerProps) => {
         seen.props = props;
+        seen.renders += 1;
         return <div data-testid="marker">{props.children}</div>;
     },
 }));
@@ -46,6 +48,7 @@ const renderMarker = (over: Partial<React.ComponentProps<typeof CoverageStartMar
 describe("coverage start marker", () => {
     beforeEach(() => {
         seen.props = null;
+        seen.renders = 0;
     });
 
     it("is a draggable marker at the reported start", () => {
@@ -127,5 +130,35 @@ describe("coverage start marker", () => {
         drop(5.0007, 52.0004);
         again({longitude: 5.0012, latitude: 52.0});
         expect(seen.props?.longitude).toBe(5.0012);
+    });
+
+    it("does not render again when the page re-renders with the same marker inputs", () => {
+        const {again, props} = renderMarker();
+        const before = seen.renders;
+        // The page re-renders constantly (robot pose, map streams) with the same marker inputs.
+        again({onMove: props.onMove});
+        again({onMove: props.onMove});
+        expect(seen.renders).toBe(before);
+    });
+
+    it("keeps the marker under the drag when it is rendered again mid-drag", () => {
+        const {again} = renderMarker();
+        act(() => seen.props?.onDragStart?.());
+        drag(5.0009, 52.0004);
+        // Something changes while the operator is still dragging (an answer for an earlier
+        // request arrives). The marker must not be put back on the old start.
+        again({settledCount: 1});
+        expect(seen.props?.longitude).toBeCloseTo(5.0009, 6);
+        expect(seen.props?.latitude).toBeCloseTo(52.0, 9);
+    });
+
+    it("uses the latest onMove at drop time", () => {
+        const first = vi.fn();
+        const second = vi.fn();
+        const {again} = renderMarker({onMove: first});
+        again({onMove: second});
+        drop(5.0007, 52.0004);
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledOnce();
     });
 });
