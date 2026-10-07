@@ -1786,6 +1786,17 @@
     "startNeedsRings": "Un point de départ nécessite les tours de périmètre. Sans eux, la tonte commence à la première ligne.",
     "startMarkerTitle": "Faites glisser pour changer où la tonte commence"
   },
+  "mapSidebar": {
+    "collapse": "replier",
+    "expand": "déplier",
+    "obstacles": "Obstacles",
+    "drawnObstacles": "Obstacles dessinés ({{count}})",
+    "noObstacles": "Aucun obstacle détecté et aucune proposition en attente.",
+    "mowingLines": "Lignes de tonte",
+    "mowingLinesOff": "Montre comment le robot va tondre une zone, pour essayer un angle ou un sens avant de tondre.",
+    "mowingLinesShow": "Afficher les lignes de tonte",
+    "noAreas": "Dessinez d'abord une zone de tonte."
+  },
   "mapOffsetPanel": {
     "mapOffset": "Décalage de la carte",
     "mapRotation": "Rotation de la carte",
