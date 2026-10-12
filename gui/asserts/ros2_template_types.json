@@ -53,6 +53,7 @@
     "dock_pose_y": "number",
     "dock_pose_yaw": "number",
     "dock_pose_yaw_sigma_rad": "number",
+    "external_rain_max_age_minutes": "number",
     "gnss_serial_baud": "integer",
     "gps_timeout_sec": "number",
     "gps_wait_after_undock_sec": "number",
