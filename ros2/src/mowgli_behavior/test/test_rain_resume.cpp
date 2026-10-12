@@ -20,6 +20,7 @@
 // and session conditions/actions are production nodes. No wall-clock sleeps or
 // source-string assertions are used to decide whether departure is allowed.
 
+#include <chrono>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -504,3 +505,124 @@ TEST_F(RainResumeTest, ExhaustedDepartureBudgetDoesNotBackUp)
 }
 
 }  // namespace
+
+// ---------------------------------------------------------------------------
+// External rain verdict (/external_rain, e.g. a roof weather station behind
+// Home Assistant). It is OR-ed with the mower's own sensor and can only ever
+// add a reason to stop.
+// ---------------------------------------------------------------------------
+
+namespace
+{
+
+using SteadyClock = std::chrono::steady_clock;
+
+class ExternalRainTest : public ::testing::Test
+{
+protected:
+  std::shared_ptr<mowgli_behavior::BTContext> ctx;
+  BT::Blackboard::Ptr blackboard;
+  BT::BehaviorTreeFactory factory;
+
+  void SetUp() override
+  {
+    ctx = std::make_shared<mowgli_behavior::BTContext>();
+    blackboard = BT::Blackboard::create();
+    blackboard->set("context", ctx);
+    blackboard->set("rain_mode", 2);
+    blackboard->set("rain_debounce_sec", 0.0);
+    factory.registerNodeType<mowgli_behavior::IsNewRain>("IsNewRain");
+    factory.registerNodeType<mowgli_behavior::IsRainDetected>("IsRainDetected");
+  }
+
+  void SetVerdict(bool wet, std::chrono::seconds age = std::chrono::seconds(0))
+  {
+    ctx->external_rain = wet;
+    ctx->external_rain_stamp = SteadyClock::now() - age;
+  }
+
+  BT::NodeStatus Tick(const char* node)
+  {
+    const std::string xml = std::string("<root BTCPP_format=\"4\"><BehaviorTree ID=\"T\"><") +
+                            node + "/></BehaviorTree></root>";
+    auto tree = factory.createTreeFromText(xml, blackboard);
+    return tree.tickOnce();
+  }
+};
+
+}  // namespace
+
+TEST_F(ExternalRainTest, NeverReceivedMeansDry)
+{
+  EXPECT_FALSE(ctx->ExternalRainActive(SteadyClock::now()));
+  EXPECT_FALSE(ctx->RainingNow(SteadyClock::now()));
+  EXPECT_EQ(Tick("IsRainDetected"), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ExternalRainTest, FreshWetVerdictCountsAsRain)
+{
+  SetVerdict(true);
+  EXPECT_TRUE(ctx->RainingNow(SteadyClock::now()));
+  EXPECT_EQ(Tick("IsRainDetected"), BT::NodeStatus::SUCCESS);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ExternalRainTest, DryVerdictNeverHidesTheMowersOwnSensor)
+{
+  SetVerdict(false);
+  ctx->latest_status.rain_detected = true;
+  EXPECT_TRUE(ctx->RainingNow(SteadyClock::now()));
+  EXPECT_EQ(Tick("IsRainDetected"), BT::NodeStatus::SUCCESS);
+}
+
+TEST_F(ExternalRainTest, WetVerdictExpiresSoADeadAutomationCannotHoldTheMower)
+{
+  ctx->external_rain_max_age_sec = 120.0 * 60.0;
+  SetVerdict(true, std::chrono::minutes(119));
+  EXPECT_TRUE(ctx->ExternalRainActive(SteadyClock::now()));
+  SetVerdict(true, std::chrono::minutes(121));
+  EXPECT_FALSE(ctx->ExternalRainActive(SteadyClock::now()));
+  EXPECT_EQ(Tick("IsRainDetected"), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ExternalRainTest, ZeroMaxAgeNeverExpires)
+{
+  ctx->external_rain_max_age_sec = 0.0;
+  SetVerdict(true, std::chrono::hours(48));
+  EXPECT_TRUE(ctx->ExternalRainActive(SteadyClock::now()));
+}
+
+TEST_F(ExternalRainTest, MasterSwitchOffIgnoresTheVerdict)
+{
+  ctx->use_external_rain = false;
+  SetVerdict(true);
+  EXPECT_FALSE(ctx->RainingNow(SteadyClock::now()));
+  EXPECT_EQ(Tick("IsRainDetected"), BT::NodeStatus::FAILURE);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ExternalRainTest, RainModeZeroStillDisablesRainHandling)
+{
+  blackboard->set("rain_mode", 0);
+  SetVerdict(true);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ExternalRainTest, MowingInRainByChoiceIgnoresTheExternalVerdictToo)
+{
+  // The operator started while the mower's OWN sensor was wet: IsNewRain
+  // stays quiet for the session, exactly as before this feature.
+  ctx->raining_at_mow_start = true;
+  SetVerdict(true);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::FAILURE);
+}
+
+TEST_F(ExternalRainTest, ExternalWetAtStartDoesNotLicenceMowingThroughNewRain)
+{
+  // raining_at_mow_start is fed by the mower's own sensor only (WasRainingAtStart),
+  // so a wet roof station at start still pauses the session.
+  ctx->raining_at_mow_start = false;
+  SetVerdict(true);
+  EXPECT_EQ(Tick("IsNewRain"), BT::NodeStatus::SUCCESS);
+}

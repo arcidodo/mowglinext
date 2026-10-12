@@ -2945,7 +2945,13 @@
     "resumeDelay": "Délai de reprise",
     "resumeDelayTooltip": "Minutes à attendre après l'arrêt de la pluie avant de reprendre",
     "debounce": "Anti-rebond",
-    "debounceTooltip": "Secondes de signal de pluie continu avant déclenchement"
+    "debounceTooltip": "Secondes de signal de pluie continu avant déclenchement",
+    "externalSource": "Source de pluie externe",
+    "externalSourceDescription": "Considère aussi comme de la pluie un oui/non publié sur le topic MQTT <prefix>/external_rain, par exemple depuis une automatisation Home Assistant liée à une station météo sur le toit. Cela ne peut qu'ajouter une raison de s'arrêter ; le capteur de pluie de la tondeuse compte toujours. Nécessite MQTT activé.",
+    "useExternal": "Utiliser la source de pluie externe",
+    "useExternalTooltip": "Traiter un « oui » externe sur <prefix>/external_rain comme de la pluie",
+    "externalExpiry": "Expiration de la pluie externe",
+    "externalExpiryTooltip": "Minutes après lesquelles un « oui » externe est ignoré s'il n'a pas été rafraîchi (0 = n'expire jamais). Évite qu'une automatisation défaillante bloque la tondeuse dans l'attente de pluie."
   },
   "settingsAdvanced": {
     "advancedParameters": "Paramètres avancés",
