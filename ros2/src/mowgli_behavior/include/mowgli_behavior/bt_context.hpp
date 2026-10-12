@@ -708,8 +708,7 @@ struct BTContext
   /// context_mutex.
   bool ExternalRainActive(std::chrono::steady_clock::time_point now) const
   {
-    if (!use_external_rain || !external_rain ||
-        external_rain_stamp.time_since_epoch().count() == 0)
+    if (!use_external_rain || !external_rain || external_rain_stamp.time_since_epoch().count() == 0)
     {
       return false;
     }
