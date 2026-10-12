@@ -1749,6 +1749,7 @@
     "add": "Add"
   },
   "coveragePreview": {
+    "hide": "Hide mowing lines",
     "title": "Mowing lines",
     "hint": "Shows how the robot will mow the selected area: the perimeter rounds (kopakker) and the lines across it. Arrows show the driving direction.",
     "area": "Area",

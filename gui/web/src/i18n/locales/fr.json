@@ -1745,6 +1745,7 @@
     "add": "Ajouter"
   },
   "coveragePreview": {
+    "hide": "Masquer les lignes de tonte",
     "title": "Lignes de tonte",
     "hint": "Montre comment le robot tondra la zone sélectionnée : les tours de périmètre (bordure) et les lignes qui la traversent. Les flèches indiquent le sens de déplacement.",
     "area": "Zone",
