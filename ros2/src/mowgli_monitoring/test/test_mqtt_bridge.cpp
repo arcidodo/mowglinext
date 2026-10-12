@@ -950,8 +950,17 @@ TEST(ParseExternalRainPayload, AcceptsDrySpellings)
 
 TEST(ParseExternalRainPayload, RejectsAnythingElseSoMalformedMessagesCannotFlipTheState)
 {
-  for (const char* bad : {"", " ", "maybe", "2", "-1", "yes please", "nope", "{\"rain\":true}",
-                          "unavailable", "unknown", "none"})
+  for (const char* bad : {"",
+                          " ",
+                          "maybe",
+                          "2",
+                          "-1",
+                          "yes please",
+                          "nope",
+                          "{\"rain\":true}",
+                          "unavailable",
+                          "unknown",
+                          "none"})
   {
     SCOPED_TRACE(bad);
     EXPECT_FALSE(MqttBridgeNode::parse_external_rain_payload(bad).has_value());
@@ -983,16 +992,23 @@ TEST_F(HomeAssistantDiscoveryNodeTest, ExternalRainIsRelayedToTheRosTopicEvenWhe
   executor.add_node(listener);
 
   const auto& deliver = recording->subscriptions.at("back_garden/external_rain");
+  const auto spin_until_received = [&](std::size_t count)
+  {
+    for (int i = 0; i < 100 && received.size() < count; ++i)
+    {
+      executor.spin_some(std::chrono::milliseconds(20));
+    }
+  };
+
   // Retained is accepted: it is STATE (what the weather station last said), and
-  // it is exactly how the last value survives a restart of the bridge.
+  // it is exactly how the last value survives a restart of the bridge. One
+  // message at a time: the topic is transient_local with depth 1, so a verdict
+  // published before the listener has matched would otherwise be overwritten.
   deliver("back_garden/external_rain", "yes", /*retained=*/true);
+  spin_until_received(1U);
   deliver("back_garden/external_rain", "garbage", /*retained=*/false);  // ignored
   deliver("back_garden/external_rain", "no", /*retained=*/false);
-
-  for (int i = 0; i < 50 && received.size() < 2U; ++i)
-  {
-    executor.spin_some(std::chrono::milliseconds(20));
-  }
+  spin_until_received(2U);
   executor.remove_node(listener);
   executor.remove_node(node);
 
