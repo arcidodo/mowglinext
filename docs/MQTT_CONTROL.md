@@ -94,6 +94,7 @@ unless noted otherwise. QoS 1 throughout.
 | `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
 | `<prefix>/command` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/high_level_control` | — |
 | `<prefix>/start_area` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/start_in_area` | — |
+| `<prefix>/external_rain` | **in** | **yes — retained is accepted** (it is state, not intent) | → `/external_rain` → `behavior_tree_node` | — |
 | `<prefix>/schedules` | out | yes | the GUI's schedule database (not ROS2 — see above) | on any create/update/delete |
 | `<prefix>/schedules/set` | **in** | no (retained deliveries rejected) | → GUI schedule database | — |
 | `<prefix>/schedules/delete` | **in** | no (retained deliveries rejected) | → GUI schedule database | — |
@@ -420,6 +421,60 @@ unrecognised/out-of-range payload is logged and dropped, and the command is drop
 `/behavior_tree_node/start_in_area` isn't available. Poll `<prefix>/high_level_status` afterwards
 to confirm it took effect. Subject to the same index-staleness caveat as `<prefix>/areas` above —
 targeting a stale index can start the wrong area.
+
+### `<prefix>/external_rain` (inbound — an external "is it raining?" verdict)
+
+Lets an outside source — typically a Home Assistant automation on a roof weather station — tell the
+mower that it is (or is not) raining, in addition to the mower's own rain sensor. Payload is a
+plain string, case-insensitive: `yes` / `on` / `true` / `wet` / `rain` / `1` mean **wet**;
+`no` / `off` / `false` / `dry` / `0` mean **dry**. Anything else (including `unknown`, `unavailable`,
+an empty payload) is logged and ignored, so a malformed message can never flip the state.
+
+Unlike `command` / `start_area`, **retained messages are accepted**: this is state, not operator
+intent, and a retained `yes`/`no` is how the last verdict survives a restart of the bridge.
+
+Behaviour on the robot (`BTContext::RainingNow`, `behavior_tree_node`):
+
+- It is **OR-ed** with the mower's own sensor. An external `no` never hides rain the mower feels, so
+  it can only add a reason to stop, never remove one.
+- While wet, the existing rain handling applies unchanged: after `rain_debounce_sec` the robot stops,
+  docks (`rain_mode` 2) and waits (`RAIN_WAITING`), and resumes once **both** sources read dry.
+- A wet verdict **expires** after `external_rain_max_age_minutes` (default 120, `0` = never) so a
+  dead automation, broker or Home Assistant cannot park the mower in the rain wait forever. Re-publish
+  while it is wet more often than that.
+- If the **mower's own** sensor was already wet when the session started ("I chose to mow in the
+  rain"), rain handling stays quiet for that session as before. A wet external verdict at start does
+  **not** count as that choice: the mower undocks, then pauses and docks again on the first rain
+  check. Do not start a mow while the external source is wet.
+- Master switch `use_external_rain` (GUI: Settings → Rain). Needs `mqtt_enabled`.
+
+Example Home Assistant automation for an Ecowitt GW1200A (`sensor.gw1200a_hourly_rain_rate` is the
+rain of the last hour in mm and stays above 0 for up to an hour after the last drop, so it also acts
+as a drying delay). Swap the trigger for any source, e.g. a `weather.*` forecast template:
+
+```yaml
+alias: Mowgli external rain
+mode: restart
+triggers:
+  - trigger: state
+    entity_id: sensor.gw1200a_hourly_rain_rate
+  - trigger: time_pattern
+    minutes: "/10"        # refresh well inside external_rain_max_age_minutes
+  - trigger: homeassistant
+    event: start
+actions:
+  - action: mqtt.publish
+    data:
+      topic: mowgli/external_rain
+      retain: true
+      payload: >-
+        {% set r = states('sensor.gw1200a_hourly_rain_rate') | float(none) %}
+        {{ 'yes' if r is not none and r > 0 else 'no' }}
+```
+
+For a forecast, replace the payload template with a condition on whatever you trust, for example
+the `precipitation` of the next hour from `weather.get_forecasts` (`type: hourly`), and publish
+`yes` when it exceeds your threshold.
 
 ### `<prefix>/schedules` (mowing schedules)
 

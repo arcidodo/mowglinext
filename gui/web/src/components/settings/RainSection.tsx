@@ -1,5 +1,5 @@
 import React from "react";
-import { Card, Col, Form, InputNumber, Row, Space, Typography } from "antd";
+import { Card, Col, Form, InputNumber, Row, Space, Switch, Typography } from "antd";
 import { CloudOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
@@ -93,6 +93,39 @@ export const RainSection: React.FC<Props> = ({ values, onChange }) => {
                                         onChange={(v) => onChange("rain_debounce_sec", v)}
                                         min={1} max={60} step={5} precision={0}
                                         style={{ width: "100%" }} addonAfter="s"
+                                    />
+                                </Form.Item>
+                            </Col>
+                        </Row>
+                    </Form>
+                </Card>
+            )}
+
+            {currentMode > 0 && (
+                <Card size="small" title={t("settingsRain.externalSource")} style={{ marginBottom: 16 }}>
+                    <Paragraph type="secondary" style={{ marginTop: 0 }}>
+                        {t("settingsRain.externalSourceDescription")}
+                    </Paragraph>
+                    <Form layout="vertical" size="small">
+                        <Row gutter={[16, 0]}>
+                            <Col xs={12}>
+                                <Form.Item htmlFor="setting-use_external_rain" data-setting-key="use_external_rain" label={t("settingsRain.useExternal")} tooltip={t("settingsRain.useExternalTooltip")}>
+                                    <Switch
+                                        id="setting-use_external_rain"
+                                        aria-label={t("settingsRain.useExternal")}
+                                        checked={values.use_external_rain ?? true}
+                                        onChange={(v) => onChange("use_external_rain", v)}
+                                    />
+                                </Form.Item>
+                            </Col>
+                            <Col xs={12}>
+                                <Form.Item htmlFor="setting-external_rain_max_age_minutes" data-setting-key="external_rain_max_age_minutes" label={t("settingsRain.externalExpiry")} tooltip={t("settingsRain.externalExpiryTooltip")}>
+                                    <InputNumber aria-label={t("settingsRain.externalExpiry") + ", min"} aria-description={t("settingsRain.externalExpiryTooltip")} id="setting-external_rain_max_age_minutes"
+                                        value={values.external_rain_max_age_minutes}
+                                        onChange={(v) => onChange("external_rain_max_age_minutes", v)}
+                                        disabled={!(values.use_external_rain ?? true)}
+                                        min={0} max={1440} step={15} precision={0}
+                                        style={{ width: "100%" }} addonAfter="min"
                                     />
                                 </Form.Item>
                             </Col>

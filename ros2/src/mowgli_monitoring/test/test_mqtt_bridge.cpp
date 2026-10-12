@@ -50,6 +50,7 @@
 #include "nav_msgs/msg/path.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "sensor_msgs/msg/nav_sat_status.hpp"
+#include "std_msgs/msg/bool.hpp"
 #include <arpa/inet.h>
 #include <gtest/gtest.h>
 #include <netinet/in.h>
@@ -919,4 +920,83 @@ TEST(SerialiseCoveragePath, ProducesExpectedJson)
   const auto path = path_with_points({{1.0, 2.0}, {3.5, -4.25}, {0.0, 0.0}});
   EXPECT_EQ(MqttBridgeNode::serialise_coverage_path(path),
             "{\"points\":[[1.000,2.000],[3.500,-4.250],[0.000,0.000]]}");
+}
+
+// ===========================================================================
+// external_rain: <prefix>/external_rain -> /external_rain (std_msgs/Bool)
+// ===========================================================================
+
+TEST(ParseExternalRainPayload, AcceptsWetSpellings)
+{
+  for (const char* wet : {"yes", "YES", "On", "true", "TRUE", "rain", "wet", "1", "  yes\n"})
+  {
+    SCOPED_TRACE(wet);
+    const auto parsed = MqttBridgeNode::parse_external_rain_payload(wet);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_TRUE(*parsed);
+  }
+}
+
+TEST(ParseExternalRainPayload, AcceptsDrySpellings)
+{
+  for (const char* dry : {"no", "NO", "Off", "false", "FALSE", "dry", "0", "\tno "})
+  {
+    SCOPED_TRACE(dry);
+    const auto parsed = MqttBridgeNode::parse_external_rain_payload(dry);
+    ASSERT_TRUE(parsed.has_value());
+    EXPECT_FALSE(*parsed);
+  }
+}
+
+TEST(ParseExternalRainPayload, RejectsAnythingElseSoMalformedMessagesCannotFlipTheState)
+{
+  for (const char* bad : {"", " ", "maybe", "2", "-1", "yes please", "nope", "{\"rain\":true}",
+                          "unavailable", "unknown", "none"})
+  {
+    SCOPED_TRACE(bad);
+    EXPECT_FALSE(MqttBridgeNode::parse_external_rain_payload(bad).has_value());
+  }
+}
+
+TEST_F(HomeAssistantDiscoveryNodeTest, ExternalRainIsRelayedToTheRosTopicEvenWhenRetained)
+{
+  auto client = std::make_unique<RecordingMqttClient>();
+  RecordingMqttClient* recording = client.get();
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("mqtt_topic_prefix", "back_garden")});
+  auto node = std::make_shared<MqttBridgeNode>(std::move(client), options);
+
+  ASSERT_EQ(recording->subscriptions.count("back_garden/external_rain"), 1U);
+
+  auto listener = std::make_shared<rclcpp::Node>("external_rain_listener");
+  std::vector<bool> received;
+  auto sub = listener->create_subscription<std_msgs::msg::Bool>(
+      "/external_rain",
+      rclcpp::QoS(1).transient_local(),
+      [&received](std_msgs::msg::Bool::ConstSharedPtr msg)
+      {
+        received.push_back(msg->data);
+      });
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(listener);
+
+  const auto& deliver = recording->subscriptions.at("back_garden/external_rain");
+  // Retained is accepted: it is STATE (what the weather station last said), and
+  // it is exactly how the last value survives a restart of the bridge.
+  deliver("back_garden/external_rain", "yes", /*retained=*/true);
+  deliver("back_garden/external_rain", "garbage", /*retained=*/false);  // ignored
+  deliver("back_garden/external_rain", "no", /*retained=*/false);
+
+  for (int i = 0; i < 50 && received.size() < 2U; ++i)
+  {
+    executor.spin_some(std::chrono::milliseconds(20));
+  }
+  executor.remove_node(listener);
+  executor.remove_node(node);
+
+  ASSERT_EQ(received.size(), 2U);
+  EXPECT_TRUE(received[0]);
+  EXPECT_FALSE(received[1]);
 }
