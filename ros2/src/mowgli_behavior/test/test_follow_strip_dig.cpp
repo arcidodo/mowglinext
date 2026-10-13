@@ -43,6 +43,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <filesystem>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -56,6 +57,7 @@
 #include "geometry_msgs/msg/transform_stamped.hpp"
 #include "mowgli_behavior/bt_context.hpp"
 #include "mowgli_behavior/coverage_nodes.hpp"
+#include "mowgli_behavior/coverage_persistence.hpp"
 #include "mowgli_behavior/dig_skip.hpp"
 #include "mowgli_behavior/status_nodes.hpp"
 #include "mowgli_behavior/status_snapshot.hpp"
@@ -898,6 +900,37 @@ TEST_F(FollowStripDigTest, NearEndAbortPreservesResumeWithoutCompleting)
   EXPECT_TRUE(ctx->completed_areas.empty());
 }
 
+// A transit goal the server has not answered yet has no handle to cancel. Halting right after
+// sending it must still cancel it once the server accepts it, or it runs with no owner and keeps
+// the navigator busy (field 2026-10-09: seven minutes, docking and every later transit refused).
+TEST_F(FollowStripDigTest, HaltingBeforeTheTransitIsAnsweredStillCancelsIt)
+{
+  // The robot is at x=0 and the only unit starts at x=2, so the first dispatch is a transit.
+  startFollowStrip({straightUnit(2.0, 4.0)});
+
+  // Tick until the transit has been sent (FollowStrip reports it through ctx->transiting), then
+  // halt at once, before the server's answer can have been picked up.
+  for (int i = 0; i < 20 && !ctx->transiting; ++i)
+  {
+    ASSERT_EQ(tree->tickOnce(), BT::NodeStatus::RUNNING);
+  }
+  ASSERT_TRUE(ctx->transiting) << "the first dispatch did not start a transit";
+  tree->haltTree();
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+  bool canceled = false;
+  while (std::chrono::steady_clock::now() < deadline)
+  {
+    if (navigate->goalCount() == 1 && navigate->isCanceling(0))
+    {
+      canceled = true;
+      break;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+  }
+  EXPECT_TRUE(canceled) << "the abandoned transit goal was never cancelled";
+}
+
 TEST_F(FollowStripDigTest, ResumeDoesNotCompleteEarlierUnitSkippedAfterTransitFailure)
 {
   const auto skipped_unit = straightUnit(2.0, 4.0);
@@ -1037,6 +1070,141 @@ TEST_F(FollowStripDigTest, SuccessClearsResumeAndCompletesArea)
   EXPECT_EQ(ctx->area_resume_pose_index.count(0), 0u);
   EXPECT_EQ(ctx->area_completed_swaths[0], (std::set<std::size_t>{0}));
   EXPECT_EQ(ctx->completed_areas.count(0), 1u);
+}
+
+TEST_F(FollowStripDigTest, RestartBetweenUnitsKeepsCompletedUnitAndResumesTheNext)
+{
+  const std::string path = ::testing::TempDir() + "/follow_strip_partial_restart.txt";
+  ctx->coverage_resume_path = path;
+  ctx->current_command = 1;
+  ctx->single_area_target = 0;
+  ctx->single_area_target_id = 502;
+  ctx->area_ids[0] = 502;
+  const std::vector<nav_msgs::msg::Path> units{straightUnit(0.0, 10.0), straightUnit(10.0, 20.0)};
+  startFollowStrip(units);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                10.0),
+            BT::NodeStatus::RUNNING);
+  follow->succeed(0);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return navigate->goalCount() == 1;
+                },
+                3.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_TRUE(ctx->area_resume_pose_index.empty());
+  ASSERT_TRUE(ctx->completed_areas.empty());
+
+  // Load into a fresh mission context from the checkpoint written by unit
+  // completion, before any cursor for the next unit is established.
+  auto restarted = std::make_shared<BTContext>();
+  restarted->coverage_resume_path = path;
+  ASSERT_TRUE(mowgli_behavior::loadCoverageResumeState(*restarted));
+  ASSERT_TRUE(mowgli_behavior::hasCoverageResumeState(*restarted));
+  EXPECT_EQ(restarted->current_area, 0);
+  EXPECT_EQ(restarted->current_command, 1u);
+  EXPECT_EQ(restarted->single_area_target, 0u);
+  EXPECT_EQ(restarted->single_area_target_id, 502u);
+  ASSERT_EQ(restarted->area_completed_swaths.at(0), (std::set<std::size_t>{0}));
+
+  tree->haltTree();
+  tree.reset();
+  // Reuse only the ROS transport/TF fixtures; all mission state was reloaded.
+  restarted->node = ctx->node;
+  restarted->helper_node = ctx->helper_node;
+  restarted->tf_buffer = ctx->tf_buffer;
+  ctx = restarted;
+  blackboard->set("context", ctx);
+  startFollowStrip(units);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return navigate->goalCount() == 2;
+                },
+                5.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_DOUBLE_EQ(navigate->goal(1)->pose.pose.position.x, 10.0);
+  EXPECT_EQ(follow->goalCount(), 1u);  // completed first unit was not dispatched again
+  navigate->succeed(1);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 2;
+                },
+                5.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_DOUBLE_EQ(follow->goal(1)->path.poses.front().pose.position.x, 10.0);
+  EXPECT_EQ(ctx->area_completed_swaths.at(0), (std::set<std::size_t>{0}));
+  tree->haltTree();
+  EXPECT_TRUE(std::filesystem::remove(path));
+}
+
+TEST_F(FollowStripDigTest, RestartWithChangedPlanDiscardsCompletedSubpaths)
+{
+  const std::string path = ::testing::TempDir() + "/follow_strip_changed_plan.txt";
+  ctx->coverage_resume_path = path;
+  const std::vector<nav_msgs::msg::Path> units{straightUnit(0.0, 10.0), straightUnit(10.0, 20.0)};
+  startFollowStrip(units);
+  ASSERT_EQ(tree->tickOnce(), BT::NodeStatus::RUNNING);  // records plan fingerprint
+  ctx->area_completed_swaths[0] = {0};
+  ctx->area_resume_pose_index.clear();
+  ASSERT_TRUE(mowgli_behavior::saveCoverageResumeState(*ctx));
+
+  auto restarted = std::make_shared<BTContext>();
+  restarted->coverage_resume_path = path;
+  ASSERT_TRUE(mowgli_behavior::loadCoverageResumeState(*restarted));
+  tree->haltTree();
+  tree.reset();
+  restarted->node = ctx->node;
+  restarted->helper_node = ctx->helper_node;
+  restarted->tf_buffer = ctx->tf_buffer;
+  ctx = restarted;
+  blackboard->set("context", ctx);
+  auto changed = units;
+  changed[0].poses[10].pose.position.y = 0.1;  // changed geometry, identical pose count
+  startFollowStrip(changed);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                10.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_TRUE(ctx->area_completed_swaths.at(0).empty());
+  EXPECT_DOUBLE_EQ(follow->goal(0)->path.poses.front().pose.position.x, 0.0);
+  tree->haltTree();
+  EXPECT_TRUE(std::filesystem::remove(path));
+}
+
+TEST_F(FollowStripDigTest, FailedCheckpointWriteDoesNotLogCursorSaved)
+{
+  const std::string path = ::testing::TempDir() + "/follow_strip_failed_write.txt";
+  ctx->coverage_resume_path = path;
+  startFollowStrip({straightUnit(0.0, 10.0)});
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                10.0),
+            BT::NodeStatus::RUNNING);
+  const auto tmp = path + ".tmp";
+  ASSERT_TRUE(std::filesystem::create_directory(tmp));
+
+  ::testing::internal::CaptureStderr();
+  tree->haltTree();
+  const auto logs = ::testing::internal::GetCapturedStderr();
+  EXPECT_NE(logs.find("Coverage checkpoint write failed"), std::string::npos);
+  EXPECT_NE(logs.find("resume cursor retained in memory only"), std::string::npos);
+  EXPECT_EQ(logs.find("resume cursor saved"), std::string::npos);
+  EXPECT_EQ(ctx->area_resume_pose_index.count(0), 1u);  // live resume survives
+  EXPECT_TRUE(std::filesystem::remove(tmp));
+  EXPECT_TRUE(std::filesystem::remove(path));
 }
 
 // --- Coverage controller rejoin (FTC turn fallback) --------------------------

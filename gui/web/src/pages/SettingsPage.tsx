@@ -1,3 +1,4 @@
+import "./SettingsPage.css";
 import {useSectionFocus} from "../hooks/useSectionFocus.ts";
 import {settingSearchText} from "../utils/settingsSearch.ts";
 import { useCallback, useMemo, useRef, useEffect } from "react";

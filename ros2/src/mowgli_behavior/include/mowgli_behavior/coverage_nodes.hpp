@@ -30,6 +30,7 @@
 #include "geometry_msgs/msg/pose_stamped.hpp"
 #include "mowgli_behavior/action_outcome.hpp"
 #include "mowgli_behavior/bt_context.hpp"
+#include "mowgli_behavior/cancel_goal.hpp"
 #include "mowgli_behavior/detour_resume.hpp"
 #include "mowgli_behavior/dig_skip.hpp"
 #include "mowgli_behavior/scan_pause.hpp"
@@ -100,17 +101,6 @@ inline bool sameTransitTarget(double ax, double ay, double bx, double by)
 /// TransitToStrip's time bound when the robot's position is unknown: the
 /// deadline of a 30 m transit (transitDeadlineSec) — bounded, and generous.
 constexpr double kTransitToStripUnknownGapM = 30.0;
-
-/// A FollowCoveragePath goal between async_send_goal and its acceptance. The BT
-/// only reads the goal handle on its next tick, so a halt in that window would
-/// otherwise neither persist the cursor nor cancel the goal — which the server
-/// then accepts and drives with nobody watching. The goal-response callback and
-/// the halt meet here under the mutex: whichever comes second cancels.
-struct FollowAcceptSlot
-{
-  std::mutex mutex;
-  bool abandoned = false;
-};
 
 /// Latest NavigateToPose result, filled by the result_callback registered at
 /// dispatch (FollowStrip's sub-path transits, TransitToStrip). Held behind a
@@ -285,6 +275,10 @@ private:
   // Cancel every in-flight follow / transit goal, reset the transit state
   // machine and switch the blade off. Shared by onHalted() and yieldToFleet().
   void abortActiveGoals(const std::shared_ptr<BTContext>& ctx);
+  /// Cancel the blade-off transit if one is still outstanding — also one the server has not
+  /// answered yet. Called whenever the current unit is left for another (booked, skipped,
+  /// finished): a transit goal that outlives its unit keeps the navigator busy.
+  void cancelTransit(const std::shared_ptr<BTContext>& ctx, const char* why);
   // Fleet coordination: the area this pass is mowing was handed to another
   // fleet member (BTContext::fleet_excluded_areas). Save the resume cursor when
   // a path is in flight, stop everything, record the yield so the next
@@ -404,8 +398,6 @@ private:
   rclcpp::Publisher<nav_msgs::msg::Path>::SharedPtr coverage_plan_pub_;
   std::shared_future<FollowGoalHandle::SharedPtr> follow_future_;
   FollowGoalHandle::SharedPtr follow_handle_;
-  /// Set while a sent follow goal has no handle yet (see FollowAcceptSlot).
-  std::shared_ptr<FollowAcceptSlot> follow_accept_;
 
   /// Terminal verdicts from the result callbacks. Polling a goal handle is not
   /// enough: a goal the server finishes in the same instant it accepts it can
@@ -441,6 +433,10 @@ private:
   std::shared_future<NavGoalHandle::SharedPtr> nav_future_;
   NavGoalHandle::SharedPtr nav_handle_;
   bool transit_active_ = false;
+  // See cancel_goal.hpp: set when the transit / follow goal is given up, so a goal the server
+  // has not answered yet is cancelled the moment it is accepted.
+  std::shared_ptr<GoalAbandonment> transit_abandonment_ = std::make_shared<GoalAbandonment>();
+  std::shared_ptr<GoalAbandonment> follow_abandonment_ = std::make_shared<GoalAbandonment>();
   // A blade-off transit is REQUIRED for the current swath (its start is
   // >kSegmentTransitGap away) but navigate_to_pose was not ready when we tried to
   // dispatch it. The blade is held OFF and the dispatch is retried each tick;
@@ -692,6 +688,7 @@ private:
   rclcpp_action::Client<Nav2Navigate>::SharedPtr nav_client_;
   std::shared_future<NavGoalHandle::SharedPtr> nav_future_;
   NavGoalHandle::SharedPtr nav_handle_;
+  std::shared_ptr<GoalAbandonment> nav_abandonment_ = std::make_shared<GoalAbandonment>();
   /// Watchdog: TransitToStrip used to have NO time bound — field 2026-09-21 it
   /// ran 53 s against a path its controller kept refusing.
   std::chrono::steady_clock::time_point start_time_{};
@@ -747,6 +744,7 @@ private:
   rclcpp_action::Client<Nav2Navigate>::SharedPtr nav_client_;
   std::shared_future<NavGoalHandle::SharedPtr> nav_future_;
   NavGoalHandle::SharedPtr nav_handle_;
+  std::shared_ptr<GoalAbandonment> nav_abandonment_ = std::make_shared<GoalAbandonment>();
 
   /// Terminal verdict from the result callback: a goal finished in the same
   /// instant it is accepted can lose its status message (action_outcome.hpp).

@@ -41,6 +41,8 @@ import (
 // Shrinking this map is the goal; each entry needs a physical measurement or a
 // decision, not a guess, which is why they are recorded rather than "fixed".
 var modelPresetDivergesFromTemplate = map[string]string{
+	"caster_x_offset":  "template -1 preserves existing chassis-derived placement; explicitly applying the 500 preset proposes 0.40 m",
+	"chassis_z_offset": "template zero preserves existing collision/visual height; explicitly applying the 500 preset proposes -0.05 m",
 	// Per-robot CALIBRATION OUTPUT, not a physical constant. The preset seeds a
 	// pre-calibration guess; check_config_drift.py already classifies
 	// ticks_per_meter as CALIBRATION_OUTPUT and expects it to differ.
@@ -50,9 +52,9 @@ var modelPresetDivergesFromTemplate = map[string]string{
 	// added this guard. Each needs someone to measure the actual machine.
 	// (chassis_length and chassis_width were reconciled on 2026-09-05 by the
 	// maintainer measuring his YardForce 500: 0.60 and 0.45; both removed.)
-	"imu_x":          "unreconciled: preset 0.187 vs template 0.18 (7 mm)",
-	"imu_z":          "unreconciled: preset 0.0 vs template 0.095 (template says base_height/2; preset 0.0 puts the IMU on the wheel axis plane)",
-	"lidar_y":        "unreconciled: preset 0.025 vs template 0.024 (1 mm)",
+	"imu_x":   "unreconciled: preset 0.187 vs template 0.18 (7 mm)",
+	"imu_z":   "unreconciled: preset 0.0 vs template 0.095 (template says base_height/2; preset 0.0 puts the IMU on the wheel axis plane)",
+	"lidar_y": "unreconciled: preset 0.025 vs template 0.024 (1 mm)",
 
 	// Numerically the same rotation, expressed with opposite sign: the LiDAR is
 	// mounted back-to-front, and -3.1416 rad == +3.1408 rad to within 8e-4.

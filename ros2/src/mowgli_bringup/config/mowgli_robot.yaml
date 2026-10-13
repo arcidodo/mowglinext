@@ -16,6 +16,10 @@ mowgli:
     # Hardware / Physical
     # -----------------------------------------------------------------
     mower_model: "YardForce500"
+    # Shared GUI shell/dock illustration; blank follows mower_model. No physical effect.
+    mower_visual_style: ""
+    # GUI-only painted shell panels. Empty keeps the original artwork.
+    mower_visual_colour: ""
     # Robot identity. Shown in the GUI and used by the fleet view to tell
     # several mowers apart (docs/MULTI_ROBOT.md). Choose a name that is unique
     # within your fleet; the GUI onboarding wizard sets it. The generated
@@ -56,7 +60,21 @@ mowgli:
     #     the radius before this change). The floor is raised to 0.60 with it.
     chassis_width: 0.45
     chassis_height: 0.19
+    # Body bottom relative to rear axle. Zero preserves legacy geometry.
+    # Hardware presets propose explicit model-specific offsets; applying one
+    # is an operator choice, not a geometry change during upgrade.
+    chassis_z_offset: 0.0
     chassis_mass_kg: 8.76
+
+    # GUI dock illustration only; does not change navigation or calibration.
+    # Full visible footprint; nominal defaults, not surveyed dock dimensions.
+    dock_visual_length: 0.67
+    dock_visual_width: 0.46
+    # Extra forward adjustment from the artwork registration, metres.
+    # Zero uses the built-in dock alignment (+0.220 m for the standard dock).
+    dock_visual_x_offset: 0.0
+    # Extra left adjustment from the artwork registration, metres.
+    dock_visual_y_offset: 0.0
 
     # Drive wheels (rear)
     # wheel_radius — 0.1 m, per the maintainer's physical measurement on the
@@ -273,9 +291,17 @@ mowgli:
     # Front casters
     caster_radius: 0.03
     caster_track: 0.36
+    # Fixed axle X from base_link (rear axle), metres; positive forward.
+    # Compatibility default: preserve the old chassis-derived position. The GUI
+    # displays its numeric result; applying a preset supplies an explicit axle X.
+    caster_x_offset: -1.0
 
     # Mowing blade
     blade_radius: 0.09
+    # Blade centre relative to chassis centre: +X forward, +Y left (m).
+    # Zero retains the original centred blade, including custom chassis centres.
+    blade_x_offset: 0.0
+    blade_y_offset: 0.0
     tool_width: 0.18           # effective cut width (2 × blade_radius)
 
     # -----------------------------------------------------------------

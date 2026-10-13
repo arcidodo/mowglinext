@@ -32,7 +32,7 @@ approximation that may suit many conventional mower docks; its nominal 0.63 ×
 0.46 m visual footprint comes from the RM1000 product dimensions above and is
 not a claim about another station's actual dimensions. Use a dedicated
 model-specific image and calibration when exact geometry is needed. The
-existing dock marker remains the universal default and fallback.
+existing dock marker remains the fallback; the styled dock is the default.
 
 The RM1000 mower and both dock images originate from photographs taken by the contributor,
 edited with AI-assisted tools and intentionally contributed under this
@@ -40,26 +40,16 @@ repository's licensing terms. Keep the existing drawn footprint and dock
 marker as runtime fallbacks whenever an image or valid pose is missing or an
 image cannot be decoded.
 
-## Generic mower
+## Shared mower assemblies
 
-`generic/mower.webp` is the selected AI-generated, unbranded forest-green mower
-illustration, exported losslessly from the approved transparent PNG. It was
-created with the built-in imagegen tool using a contributor-supplied overhead
-mower reference for shape and the existing RM1000 artwork for orientation.
-The generated artwork is contributed under the repository licensing terms.
-The supplied reference photograph is not bundled. Prompt direction: true overhead
-view, front pointing up, red stop button at the rear, graphite control deck,
-forest-green shoulders and restrained mint accents; no logos, words or background.
+The generic static mower from #965 and the RM1000 static map option are replaced
+by shared URDF assemblies. Select a chassis style in Hardware; its registered
+dock pair follows automatically on the map. There is no separate dock selector.
+Existing generic map selections use the assembly; old RM1000 selections seed the
+RM1000 shell unless an explicit Hardware appearance has already been chosen.
+The old photographs are retained as contributed references and optional assets
+for future dock registrations; they no longer define mower dimensions.
 
-This is an optional visual approximation for any mower, selected independently
-from hardware presets. Its nominal 0.57 m length, proportional width and estimated
-rear-axle pose anchor are display metadata, not measured geometry for any model.
-The nominal length matches the RM1000 display option. After padding is accounted
-for, its visible width is about 0.40 m and its body center is about 0.18 m ahead
-of the pose, matching the default URDF display geometry; the shell is 0.03 m longer
-than that default 0.54 m chassis. The `(0.5, 0.77)` source anchor is an estimate,
-not a measured axle location for the reference mower.
-The 1091 × 1442 source has a visible body extent of 865 × 1235 pixels (ignoring
-very faint alpha-edge pixels); explicit width calibration preserves its aspect
-ratio. It can be paired with the generic dock. Existing URDF geometry remains
-the fallback until the image decodes and a valid pose and heading are available.
+The assembly uses the running robot description for chassis, wheel, caster and
+sensor placement. See [`Layered mower artwork`](../../../src/components/robot/README.md)
+for provenance, scaling, compact map derivatives and geometry limitations.

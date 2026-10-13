@@ -1,3 +1,5 @@
+import {DOCK_VISUAL_KEYS} from "../components/robot/dockGeometry";
+import {materializeLegacyCasterPosition} from "../utils/casterPosition";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useApi } from "./useApi.ts";
@@ -89,8 +91,8 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
         keys: [
             "robot_name", "mower_model", "wheel_radius", "wheel_track", "wheel_width",
             "wheel_x_offset", "chassis_center_x", "chassis_length", "chassis_width",
-            "chassis_height", "chassis_mass_kg", "caster_radius", "caster_track",
-            "ticks_per_meter", "tool_width", "blade_radius",
+            "mower_visual_style", "mower_visual_colour", ...DOCK_VISUAL_KEYS, "chassis_height", "chassis_z_offset", "chassis_mass_kg", "caster_radius", "caster_track", "caster_x_offset",
+            "ticks_per_meter", "tool_width", "blade_radius", "blade_x_offset", "blade_y_offset",
             // The hardware backend's own wiring (ports, controller type), in
             // the same section: one place for "what this robot is made of".
             ...groupKeys(OPENMOWER_WIRING_GROUP),
@@ -401,11 +403,11 @@ export const useSettingsManager = () => {
     }, []);
 
     const handleChange = useCallback((key: string, value: any) => {
-        setLocalValues((prev) => ({ ...prev, [key]: value }));
+        setLocalValues((prev) => ({ ...materializeLegacyCasterPosition(prev), [key]: value }));
     }, []);
 
     const handleBulkChange = useCallback((changes: Record<string, any>) => {
-        setLocalValues((prev) => ({ ...prev, ...changes }));
+        setLocalValues((prev) => ({ ...materializeLegacyCasterPosition(prev), ...changes }));
     }, []);
 
     // hasDefault: the schema knows a default for this key (so a reset is
@@ -438,7 +440,7 @@ export const useSettingsManager = () => {
     const resetToDefault = useCallback(
         (key: string) => {
             if (!(key in defaults)) return;
-            setLocalValues((prev) => ({ ...prev, [key]: defaults[key] }));
+            setLocalValues((prev) => ({ ...materializeLegacyCasterPosition(prev), [key]: defaults[key] }));
         },
         [defaults]
     );
@@ -529,7 +531,7 @@ export const useSettingsManager = () => {
             // (the OpenMower bridge reads them at start-up).
             const liveHardwareKeys = hardware.backend === "mowgli" ? ["ticks_per_meter", ...driveKeys] : [];
             const liveHardwareDirty = liveHardwareKeys.some((k) => dirtyKeys.has(k));
-            const requiresRosRestart = [...dirtyKeys].some(key => !liveHardwareKeys.includes(key));
+            const requiresRosRestart = [...dirtyKeys].some(key => !liveHardwareKeys.includes(key) && !DOCK_VISUAL_KEYS.includes(key) && key !== "mower_visual_style" && key !== "mower_visual_colour");
             const hasDirtyChanges = dirtyKeys.size > 0;
             const externalSavers = Object.values(externalSaversRef.current).filter((x) => x.dirtyCount > 0);
             if (!hasDirtyChanges && !shouldRestartGps && externalSavers.length === 0) {
@@ -568,7 +570,7 @@ export const useSettingsManager = () => {
                     message: t("settingsSections.toasts.saved"),
                     description: shouldRestartGps
                         ? t("settingsSections.toasts.savedGpsRestartDescription")
-                        : t(requiresRosRestart ? "settingsSections.toasts.savedDescription" : "settingsSections.toasts.savedApplyingLive"),
+                        : t(requiresRosRestart ? "settingsSections.toasts.savedDescription" : liveHardwareDirty ? "settingsSections.toasts.savedApplyingLive" : "settingsSections.toasts.savedDisplaySettings"),
                 });
             } else if (shouldRestartGps) {
                 notification.info({
