@@ -61,6 +61,13 @@ export const RainSection: React.FC<Props> = ({ values, onChange }) => {
     const { colors } = useThemeMode();
     const externalRainState = useExternalRainState();
     const currentMode = values.rain_mode ?? 2;
+    // Narrowed (not read as `any`), so these two fields add no lint warnings.
+    const externalEnabled: boolean =
+        typeof values.use_external_rain === "boolean" ? values.use_external_rain : true;
+    const externalExpiry: number | undefined =
+        typeof values.external_rain_max_age_minutes === "number"
+            ? values.external_rain_max_age_minutes
+            : undefined;
 
     return (
         <div>
@@ -152,7 +159,7 @@ export const RainSection: React.FC<Props> = ({ values, onChange }) => {
                                     <Switch
                                         id="setting-use_external_rain"
                                         aria-label={t("settingsRain.useExternal")}
-                                        checked={values.use_external_rain ?? true}
+                                        checked={externalEnabled}
                                         onChange={(v) => onChange("use_external_rain", v)}
                                     />
                                 </Form.Item>
@@ -160,9 +167,9 @@ export const RainSection: React.FC<Props> = ({ values, onChange }) => {
                             <Col xs={12}>
                                 <Form.Item htmlFor="setting-external_rain_max_age_minutes" data-setting-key="external_rain_max_age_minutes" label={t("settingsRain.externalExpiry")} tooltip={t("settingsRain.externalExpiryTooltip")}>
                                     <InputNumber aria-label={t("settingsRain.externalExpiry") + ", min"} aria-description={t("settingsRain.externalExpiryTooltip")} id="setting-external_rain_max_age_minutes"
-                                        value={values.external_rain_max_age_minutes}
+                                        value={externalExpiry}
                                         onChange={(v) => onChange("external_rain_max_age_minutes", v)}
-                                        disabled={!(values.use_external_rain ?? true)}
+                                        disabled={!externalEnabled}
                                         min={0} max={1440} step={15} precision={0}
                                         style={{ width: "100%" }} addonAfter="min"
                                     />
