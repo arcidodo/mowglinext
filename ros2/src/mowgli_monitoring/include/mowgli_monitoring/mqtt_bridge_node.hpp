@@ -159,6 +159,7 @@
 #include "rclcpp/rclcpp.hpp"
 #include "sensor_msgs/msg/nav_sat_fix.hpp"
 #include "std_msgs/msg/bool.hpp"
+#include "std_msgs/msg/string.hpp"
 
 namespace mowgli_monitoring
 {
@@ -581,6 +582,7 @@ private:
   /// Unlike command/start_area this is STATE, not operator intent, so a retained
   /// message is accepted — it is exactly how the last value survives a restart.
   void on_mqtt_external_rain(const std::string& topic, const std::string& payload, bool retained);
+  void on_external_rain_state(std_msgs::msg::String::ConstSharedPtr msg);
   void on_home_assistant_status(const std::string& topic,
                                 const std::string& payload,
                                 bool retained);
@@ -626,6 +628,9 @@ private:
   rclcpp::Subscription<mowgli_interfaces::msg::HighLevelStatus>::SharedPtr sub_high_level_status_;
   /// Latched rain verdict from an external source (a Home Assistant automation).
   rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_external_rain_;
+  /// What the mower makes of that verdict (behavior_tree_node's JSON), relayed retained to
+  /// `<prefix>/external_rain_state` so a dashboard can show that it arrived and is counted.
+  rclcpp::Subscription<std_msgs::msg::String>::SharedPtr sub_external_rain_state_;
   rclcpp::Subscription<sensor_msgs::msg::NavSatFix>::SharedPtr sub_gps_fix_;
   rclcpp::Subscription<mowgli_interfaces::msg::GnssStatus>::SharedPtr sub_gnss_status_;
   rclcpp::Subscription<nav_msgs::msg::Odometry>::SharedPtr sub_pose_;

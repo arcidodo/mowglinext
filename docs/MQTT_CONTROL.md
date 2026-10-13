@@ -94,6 +94,7 @@ unless noted otherwise. QoS 1 throughout.
 | `<prefix>/areas` | out | yes | `/map_server_node/get_mowing_area` (polled) | ~every 10s |
 | `<prefix>/command` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/high_level_control` | — |
 | `<prefix>/start_area` | **in** | no (retained deliveries rejected) | → `/behavior_tree_node/start_in_area` | — |
+| `<prefix>/external_rain_state` | out | yes | `/behavior_tree_node/external_rain_state` (JSON from `behavior_tree_node`) | on change, plus a 30 s heartbeat |
 | `<prefix>/external_rain` | **in** | **yes — retained is accepted** (it is state, not intent) | → `/external_rain` → `behavior_tree_node` | — |
 | `<prefix>/schedules` | out | yes | the GUI's schedule database (not ROS2 — see above) | on any create/update/delete |
 | `<prefix>/schedules/set` | **in** | no (retained deliveries rejected) | → GUI schedule database | — |
@@ -475,6 +476,31 @@ actions:
 For a forecast, replace the payload template with a condition on whatever you trust, for example
 the `precipitation` of the next hour from `weather.get_forecasts` (`type: hourly`), and publish
 `yes` when it exceeds your threshold.
+
+### `<prefix>/external_rain_state` (outbound — feedback on the external rain verdict)
+
+Read-only feedback on what the mower makes of `<prefix>/external_rain`, so a dashboard can show
+that a message arrived and whether it is being counted. It never changes what the mower does.
+Retained JSON, republished on every change and every 30 s:
+
+```json
+{"state":"wet","enabled":true,"received":true,"wet":true,"active":true,
+ "onboard_wet":false,"age_s":312,"expires_in_s":6888,"max_age_s":7200}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `state` | `no_data` (nothing received yet), `dry`, `wet` (fresh, **counted**), `expired` (a wet verdict older than the expiry, **not** counted) or `disabled` (`use_external_rain` off) |
+| `enabled` | the master switch (`use_external_rain`) |
+| `received` / `wet` | a verdict has arrived / the last one said wet, whatever its age |
+| `active` | a fresh wet verdict that the rain guard counts **right now** |
+| `onboard_wet` | the mower's **own** rain sensor, shown beside it so the two sources can be told apart |
+| `age_s`, `expires_in_s` | seconds since the last verdict / until a wet one expires; `null` when not applicable |
+| `max_age_s` | the configured expiry (`external_rain_max_age_minutes` × 60), `0` = never |
+
+`age_s` and `expires_in_s` are refreshed by the 30 s heartbeat, not continuously. This is a
+status only: while the mower is docked and idle a `yes` has no visible effect on the mower itself,
+because the rain guard lives in the mowing tree; this topic is where you see that it arrived.
 
 ### `<prefix>/schedules` (mowing schedules)
 

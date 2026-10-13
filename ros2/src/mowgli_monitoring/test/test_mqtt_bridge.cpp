@@ -1016,3 +1016,49 @@ TEST_F(HomeAssistantDiscoveryNodeTest, ExternalRainIsRelayedToTheRosTopicEvenWhe
   EXPECT_TRUE(received[0]);
   EXPECT_FALSE(received[1]);
 }
+
+TEST_F(HomeAssistantDiscoveryNodeTest, ExternalRainStateIsRelayedRetainedToMqtt)
+{
+  auto client = std::make_unique<RecordingMqttClient>();
+  RecordingMqttClient* recording = client.get();
+  rclcpp::NodeOptions options;
+  options.parameter_overrides({rclcpp::Parameter("mqtt_topic_prefix", "back_garden")});
+  auto node = std::make_shared<MqttBridgeNode>(std::move(client), options);
+
+  auto source = std::make_shared<rclcpp::Node>("external_rain_state_source");
+  auto pub =
+      source->create_publisher<std_msgs::msg::String>("/behavior_tree_node/external_rain_state",
+                                                      rclcpp::QoS(1).transient_local());
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(node);
+  executor.add_node(source);
+
+  const std::string json = R"({"state":"wet","active":true,"age_s":12})";
+  std_msgs::msg::String msg;
+  msg.data = json;
+  pub->publish(msg);
+
+  const auto relayed = [&]()
+  {
+    for (const auto& publication : recording->publications)
+    {
+      if (publication.topic == "back_garden/external_rain_state")
+      {
+        return &publication;
+      }
+    }
+    return static_cast<const RecordingMqttClient::Publication*>(nullptr);
+  };
+  for (int i = 0; i < 100 && relayed() == nullptr; ++i)
+  {
+    executor.spin_some(std::chrono::milliseconds(20));
+  }
+  executor.remove_node(source);
+  executor.remove_node(node);
+
+  const auto* publication = relayed();
+  ASSERT_NE(publication, nullptr);
+  EXPECT_EQ(publication->payload, json);
+  EXPECT_TRUE(publication->retained);
+}
