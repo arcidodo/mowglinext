@@ -45,6 +45,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -131,13 +132,31 @@ public:
         name,
         [this](const rclcpp_action::GoalUUID&, std::shared_ptr<const typename ActionT::Goal>)
         {
-          std::unique_lock<std::mutex> lock(mutex_);
-          ++requests_;
-          accept_cv_.wait(lock,
-                          [this]()
-                          {
-                            return !hold_accept_;
-                          });
+          std::shared_future<void> gate;
+
+          {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            // Preserve both request counters used by the test suites.
+            ++goal_requests_;
+            ++requests_;
+
+            // MAVROS: optionally delay the goal response.
+            gate = response_gate_;
+
+            // Dev: optionally hold goal acceptance.
+            accept_cv_.wait(lock,
+                            [this]()
+                            {
+                              return !hold_accept_;
+                            });
+          }
+
+          // Never wait on the future while holding mutex_.
+          if (gate.valid())
+          {
+            gate.wait();
+          }
           return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
         },
         [](const std::shared_ptr<Handle>)
@@ -172,6 +191,19 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     return handles_.size();
+  }
+
+  // A promise owned by the test deterministically withholds the server's goal
+  // response. Its destruction also releases the waiter after a failed ASSERT.
+  void deferGoalResponse(std::shared_future<void> gate)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    response_gate_ = std::move(gate);
+  }
+
+  std::size_t goalRequests() const
+  {
+    return goal_requests_.load();
   }
 
   std::shared_ptr<const typename ActionT::Goal> goal(std::size_t i)
@@ -211,6 +243,8 @@ private:
   bool hold_accept_ = false;
   std::size_t requests_ = 0;
   std::vector<std::shared_ptr<Handle>> handles_;
+  std::shared_future<void> response_gate_;
+  std::atomic<std::size_t> goal_requests_{0};
 };
 
 }  // namespace
@@ -908,8 +942,7 @@ TEST_F(FollowStripDigTest, HaltingBeforeTheTransitIsAnsweredStillCancelsIt)
   // The robot is at x=0 and the only unit starts at x=2, so the first dispatch is a transit.
   startFollowStrip({straightUnit(2.0, 4.0)});
 
-  // Tick until the transit has been sent (FollowStrip reports it through ctx->transiting), then
-  // halt at once, before the server's answer can have been picked up.
+  // Tick until the transit has been sent, then halt before the server answers.
   for (int i = 0; i < 20 && !ctx->transiting; ++i)
   {
     ASSERT_EQ(tree->tickOnce(), BT::NodeStatus::RUNNING);
@@ -1196,9 +1229,9 @@ TEST_F(FollowStripDigTest, FailedCheckpointWriteDoesNotLogCursorSaved)
   const auto tmp = path + ".tmp";
   ASSERT_TRUE(std::filesystem::create_directory(tmp));
 
-  ::testing::internal::CaptureStderr();
+  ::testing::internal::CaptureStdout();
   tree->haltTree();
-  const auto logs = ::testing::internal::GetCapturedStderr();
+  const auto logs = ::testing::internal::GetCapturedStdout();
   EXPECT_NE(logs.find("Coverage checkpoint write failed"), std::string::npos);
   EXPECT_NE(logs.find("resume cursor retained in memory only"), std::string::npos);
   EXPECT_EQ(logs.find("resume cursor saved"), std::string::npos);

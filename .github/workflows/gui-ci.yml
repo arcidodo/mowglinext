@@ -96,7 +96,8 @@ jobs:
         run: yarn lint
 
       - name: Unit tests
-        run: yarn test
+        # Bound concurrent jsdom/Ant Design suites on small runners; keep the 20s timeout.
+        run: yarn test --maxWorkers=2
 
       - name: Install Chromium for power-menu regression tests
         run: npx playwright install --with-deps chromium

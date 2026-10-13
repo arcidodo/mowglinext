@@ -201,6 +201,10 @@ class TestCoverageProcessRestart(unittest.TestCase):
     def start_process(self):
         log = Path(self.work.name) / f'process_{len(self.processes)}.log'
         output = log.open('w')
+
+        env = os.environ.copy()
+        env['RCUTILS_LOGGING_BUFFERED_STREAM'] = '0'
+
         process = subprocess.Popen(
             [
                 os.environ['MOWGLI_BEHAVIOR_EXECUTABLE'],
@@ -214,6 +218,7 @@ class TestCoverageProcessRestart(unittest.TestCase):
             ],
             stdout=output,
             stderr=subprocess.STDOUT,
+            env=env,
         )
         self.processes.append((process, output))
         return process, log
@@ -278,9 +283,12 @@ class TestCoverageProcessRestart(unittest.TestCase):
         self.wait_until(
             lambda: True in self.resume_values, 'GUI resume signal was false'
         )
-        self.assertIn(
-            'resume cursor, 0 completed areas, 1 completed subpaths, auto_continue=true',
-            log.read_text(),
+        self.wait_until(
+            lambda: (
+                'resume cursor, 0 completed areas, 1 completed subpaths, auto_continue=true'
+                in log.read_text()
+            ),
+            'Restart resume log was not emitted',
         )
         self.transit_goals[1][1].set()
         self.wait_until(

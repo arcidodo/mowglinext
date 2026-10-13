@@ -8,7 +8,7 @@ import { dirtyKeysRequireGpsRestart, restartGps } from "../utils/containers.ts";
 import { useContainerRestart } from "./useContainerRestart.ts";
 import { getQuaternionFromHeading } from "../utils/map.tsx";
 import { ContentType } from "../api/Api.ts";
-import {matchesSettingSearch, settingSearchText} from "../utils/settingsSearch.ts";
+import { matchesSettingSearch, settingSearchText } from "../utils/settingsSearch.ts";
 import { valuesMatch } from "../utils/settingsValues.ts";
 import {
     AREA_RECORDING_GROUP,
@@ -26,9 +26,11 @@ import {
     YAW_LOOP_GROUP,
     groupKeys,
 } from "../components/settings/settingsFieldGroups.ts";
+import { liveHardwareParameters, settingsSectionsForBackend } from "../constants/hardwareBackends.ts";
 import { useHardwareBackend } from "./useHardwareBackend.ts";
 import {apiErrorMessage, errorMessage} from "../utils/errors";
 import type {SettingsValues} from "../types/settings.generated";
+
 
 /** A section that saves outside mowgli_robot.yaml but wants the page's Save button. */
 export interface ExternalSaver {
@@ -39,6 +41,7 @@ export interface ExternalSaver {
     /** Drop pending edits (page-level Revert). */
     revert?: () => void;
 }
+
 
 export type SettingsSection =
     | "updates"
@@ -62,6 +65,7 @@ export type SettingsSection =
     | "notifications"
     | "advanced";
 
+
 export type SectionMeta = {
     id: SettingsSection;
     label: string;
@@ -69,6 +73,7 @@ export type SectionMeta = {
     description: string;
     keys: string[];
 };
+
 
 const SECTION_DEFINITIONS: SectionMeta[] = [
     {
@@ -332,9 +337,11 @@ const SECTION_DEFINITIONS: SectionMeta[] = [
     },
 ];
 
+
 export const useSettingsManager = () => {
     const { t } = useTranslation();
     const guiApi = useApi();
+    const hardware = useHardwareBackend();
     const { notification } = App.useApp();
     const [savedValues, setSavedValues] = useState<SettingsValues>({});
     const [localValues, setLocalValues] = useState<SettingsValues>({});
@@ -366,11 +373,12 @@ export const useSettingsManager = () => {
     });
     const [searchQuery, setSearchQuery] = useState("");
     const initialLoadDone = useRef(false);
-    const hardware = useHardwareBackend();
+
+
 
     // Load values on mount
     useEffect(() => {
-        (async () => {
+        void (async () => {
             try {
                 setLoading(true);
                 const res = await guiApi.settings.yamlList();
@@ -434,7 +442,7 @@ export const useSettingsManager = () => {
             ...changes,
         }));
     }, []);
-  
+
     // hasDefault: the schema knows a default for this key (so a reset is
     // meaningful). isDefault: the current local value already equals that
     // default (tolerating int/float JSON churn, so 5 == 5.0). isOverridden:
@@ -447,17 +455,20 @@ export const useSettingsManager = () => {
         [defaults]
     );
 
+
     const isDefault = useCallback(
         (key: string): boolean =>
             key in defaults && valuesMatch(localValues[key], defaults[key]),
         [defaults, localValues]
     );
 
+
     const isOverridden = useCallback(
         (key: string): boolean =>
             key in defaults && !valuesMatch(localValues[key], defaults[key]),
         [defaults, localValues]
     );
+
 
     // resetToDefault reverts a field to its schema default in the local (unsaved)
     // state; the operator still presses Save to persist. On save the backend
@@ -469,6 +480,7 @@ export const useSettingsManager = () => {
         },
         [defaults]
     );
+
 
     // Dirty detection
     const dirtyKeys = useMemo(() => {
@@ -485,6 +497,7 @@ export const useSettingsManager = () => {
         }
         return dirty;
     }, [localValues, savedValues]);
+
 
     // External savers: sections whose settings do not live in mowgli_robot.yaml
     // (IrriSense keeps its token in the GUI DB) register here so the page's
@@ -514,6 +527,7 @@ export const useSettingsManager = () => {
     const dirtyCount = dirtyKeys.size + externalDirtyCount;
     const isDirty = dirtyCount > 0;
 
+
     const isSectionDirty = useCallback(
         (sectionId: SettingsSection): boolean => {
             const section = SECTION_DEFINITIONS.find((s) => s.id === sectionId);
@@ -534,6 +548,7 @@ export const useSettingsManager = () => {
         [dirtyKeys, externalDirtyCounts]
     );
 
+
     const persistSettings = useCallback(async (options?: { forceGpsRestart?: boolean }) => {
         try {
             setSaving(true);
@@ -547,16 +562,25 @@ export const useSettingsManager = () => {
                 dirtyKeys.has("dock_pose_x") ||
                 dirtyKeys.has("dock_pose_y") ||
                 dirtyKeys.has("dock_pose_yaw");
-            const driveKeys = [
-                "wheel_pid_kp", "wheel_pid_ki", "wheel_pid_kd",
-                "wheel_pid_integral_limit", "wheel_pid_pwm_per_mps",
-            ];
-            // Live push to the Mowgli STM32 bridge only: on another backend
-            // these parameters do not exist on the node named hardware_bridge
-            // (the OpenMower bridge reads them at start-up).
-            const liveHardwareKeys = hardware.backend === "mowgli" ? ["ticks_per_meter", ...driveKeys] : [];
-            const liveHardwareDirty = liveHardwareKeys.some((k) => dirtyKeys.has(k));
-            const requiresRosRestart = [...dirtyKeys].some(key => !liveHardwareKeys.includes(key) && !DOCK_VISUAL_KEYS.includes(key) && key !== "mower_visual_style" && key !== "mower_visual_colour");
+            // Only runtime-confirmed routes may be pushed live. OpenMower and
+            // pending MAVROS routes must be persisted and applied on restart.
+            const liveParameters = liveHardwareParameters(
+                dirtyKeys,
+                localValues,
+                hardware.parameterRoutes,
+            );
+            const liveHardwareKeys = new Set(
+                [...dirtyKeys].filter((key) =>
+                    hardware.parameterRoutes[key]?.runtime === "available" && key in localValues,
+                ),
+            );
+            const liveHardwareDirty = liveHardwareKeys.size > 0;
+            // Appearance-only changes are persisted without restarting ROS;
+            // geometry and unavailable runtime routes still require a restart.
+            const requiresRosRestart = [...dirtyKeys].some((key) =>
+                !liveHardwareKeys.has(key) && !DOCK_VISUAL_KEYS.includes(key) &&
+                key !== "mower_visual_style" && key !== "mower_visual_colour",
+            );
             const hasDirtyChanges = dirtyKeys.size > 0;
             const externalSavers = Object.values(externalSaversRef.current).filter((x) => x.dirtyCount > 0);
             if (!hasDirtyChanges && !shouldRestartGps && externalSavers.length === 0) {
@@ -649,33 +673,28 @@ export const useSettingsManager = () => {
                     });
                 }
             }
-            // Push live-tunable wheel/drive parameters to the running
-            // hardware_bridge node so they take effect immediately (no
-            // restart). yamlCreate above persisted them to mowgli_robot.yaml
-            // for the next boot; this sets the live ROS params too. The
-            // hardware_bridge callback applies ticks_per_meter in-process and
-            // re-sends the full drive runtime tuning packet to the STM32 firmware.
-            if (hasDirtyChanges && liveHardwareDirty) {
-                const parameters = liveHardwareKeys
-                    .filter((k) => dirtyKeys.has(k) && k in localValues)
-                    .map((k) => ({ name: `hardware_bridge.${k}`, value: Number(localValues[k]) }));
-                if (parameters.length > 0) {
-                    try {
-                        await guiApi.request({
-                            path: "/params",
-                            method: "POST",
-                            type: ContentType.Json,
-                            format: "json",
-                            body: { parameters },
-                        });
-                    } catch (e) {
-                        setRestartRequired(true);
-                        notification.warning({
-                            message: t("settingsSections.toasts.drivePidUpdateFailed"),
-                            description: errorMessage(e) ??
-                                t("settingsSections.toasts.drivePidUpdateFailedDescription"),
-                        });
+            // Persisting YAML does not guarantee the runtime accepted a live
+            // parameter update. Only send routes the active backend reports as available.
+            if (hasDirtyChanges && liveParameters.length > 0) {
+                try {
+                    const liveResponse = await guiApi.request({
+                        path: "/params",
+                        method: "POST",
+                        type: ContentType.Json,
+                        format: "json",
+                        body: { parameters: liveParameters },
+                    });
+
+                    if (liveResponse.error) {
+                        throw new Error(apiErrorMessage(liveResponse.error));
                     }
+                } catch (e) {
+                    setRestartRequired(true);
+                    notification.warning({
+                        message: t("settingsSections.toasts.drivePidUpdateFailed"),
+                        description: errorMessage(e) ??
+                            t("settingsSections.toasts.drivePidUpdateFailedDescription"),
+                    });
                 }
             }
         } catch (e) {
@@ -686,7 +705,17 @@ export const useSettingsManager = () => {
         } finally {
             setSaving(false);
         }
-    }, [localValues, dirtyKeys, guiApi, notification, gpsRestart, t, hardware.backend]);
+    }, [
+        localValues,
+        dirtyKeys,
+        guiApi,
+        notification,
+        gpsRestart,
+        t,
+        hardware.parameterRoutes,
+        hardware.backend,
+    ]);
+
 
     const savePartialValues = useCallback(async (
         partialValues: SettingsValues,
@@ -706,9 +735,11 @@ export const useSettingsManager = () => {
                 }
             }
 
+
             if (Object.keys(changedPayload).length === 0) {
                 return true;
             }
+
 
             setSaving(true);
             const res = await guiApi.settings.yamlCreate(changedPayload);
@@ -716,12 +747,15 @@ export const useSettingsManager = () => {
                 throw new Error(apiErrorMessage(res.error));
             }
 
+
             setSavedValues((prev) => ({ ...prev, ...changedPayload }));
             setLocalValues((prev) => ({ ...prev, ...changedPayload }));
+
 
             if (options?.markRestartRequired ?? true) {
                 setRestartRequired(true);
             }
+
 
             if (!options?.silentSuccess) {
                 notification.success({
@@ -729,6 +763,7 @@ export const useSettingsManager = () => {
                     description: options?.successDescription,
                 });
             }
+
 
             return true;
         } catch (e) {
@@ -741,19 +776,21 @@ export const useSettingsManager = () => {
             setSaving(false);
         }
     }, [guiApi, notification, savedValues, t]);
-
     const acceptPersistedValues = useCallback((persistedValues: SettingsValues) => {
         setSavedValues((prev) => ({ ...prev, ...persistedValues }));
         setLocalValues((prev) => ({ ...prev, ...persistedValues }));
     }, []);
 
+
     const save = useCallback(async () => {
         await persistSettings();
     }, [persistSettings]);
 
+
     const saveAndRestartGps = useCallback(async () => {
         await persistSettings({ forceGpsRestart: true });
     }, [persistSettings]);
+
 
     const revert = useCallback(() => {
         setLocalValues({ ...savedValues });
@@ -761,6 +798,7 @@ export const useSettingsManager = () => {
             saver.revert?.();
         }
     }, [savedValues]);
+
 
     // Get keys that don't belong to any defined section.
     // dock_pose_x/y/yaw are excluded because they are written by the
@@ -807,6 +845,7 @@ export const useSettingsManager = () => {
         );
     }, [localValues]);
 
+
     // Search filtering
     const matchesSearch = useCallback(
         (key: string, label?: string): boolean => {
@@ -816,14 +855,19 @@ export const useSettingsManager = () => {
         [searchQuery, t]
     );
 
+
     return {
-        sections: SECTION_DEFINITIONS,
-        hardwareBackend: hardware.backend,
+        sections: settingsSectionsForBackend(SECTION_DEFINITIONS, hardware.backend).map(section =>
+            hardware.backend === "mavros" && section.id === "drive_motor"
+                ? { ...section, description: "settingsDriveMotor.odometry.sectionDescription" }
+                : section
+        ),
+        hardwareBackend: hardware,
         backendDefaultOverrides: hardware.defaultOverrides,
         values: localValues,
         savedValues,
         defaults,
-        loading,
+        loading: loading || hardware.loading,
         saving,
         gpsRestarting: gpsRestart.pending,
         isDirty,

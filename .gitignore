@@ -87,3 +87,6 @@ docker/.compose-plan-*/
 .blackbox-results/
 .blackbox-preview.*
 .blackbox-manual/
+
+# Private FCU export and pre-review evidence; never publish without operator consent.
+/docs/validation/fcu-param-configurator-20261011/local-only/
