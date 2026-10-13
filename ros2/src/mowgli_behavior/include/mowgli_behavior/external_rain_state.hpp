@@ -18,7 +18,7 @@
 #pragma once
 
 #include <chrono>
-#include <cstdio>
+#include <cstdint>
 #include <string>
 
 #include "mowgli_behavior/bt_context.hpp"
@@ -44,11 +44,11 @@ struct ExternalRainStatus
   /// The mower's own rain sensor, shown beside it so the two sources can be told apart.
   bool onboard_wet{false};
   /// Seconds since the last verdict; < 0 when none was received.
-  long age_s{-1};
+  std::int64_t age_s{-1};
   /// Seconds until a wet verdict expires; < 0 when not applicable (dry, no expiry).
-  long expires_in_s{-1};
+  std::int64_t expires_in_s{-1};
   /// Configured expiry in seconds; 0 = never expires.
-  long max_age_s{0};
+  std::int64_t max_age_s{0};
 };
 
 /// Caller holds ctx.context_mutex.
@@ -60,18 +60,18 @@ inline ExternalRainStatus ComputeExternalRainStatus(const BTContext& ctx,
   s.received = ctx.external_rain_stamp.time_since_epoch().count() != 0;
   s.wet = s.received && ctx.external_rain;
   s.onboard_wet = ctx.latest_status.rain_detected;
-  s.max_age_s = static_cast<long>(ctx.external_rain_max_age_sec);
+  s.max_age_s = static_cast<std::int64_t>(ctx.external_rain_max_age_sec);
   if (s.received)
   {
-    s.age_s =
-        static_cast<long>(std::chrono::duration<double>(now - ctx.external_rain_stamp).count());
+    s.age_s = static_cast<std::int64_t>(
+        std::chrono::duration<double>(now - ctx.external_rain_stamp).count());
   }
   s.active = ctx.ExternalRainActive(now);
   if (s.active && ctx.external_rain_max_age_sec > 0.0)
   {
     const double left = ctx.external_rain_max_age_sec -
                         std::chrono::duration<double>(now - ctx.external_rain_stamp).count();
-    s.expires_in_s = left > 0.0 ? static_cast<long>(left) : 0;
+    s.expires_in_s = left > 0.0 ? static_cast<std::int64_t>(left) : 0;
   }
 
   if (!s.enabled)
@@ -97,7 +97,7 @@ inline ExternalRainStatus ComputeExternalRainStatus(const BTContext& ctx,
 /// MQTT `<prefix>/external_rain_state`. `age_s`, `expires_in_s` are null when not applicable.
 inline std::string ExternalRainStatusJson(const ExternalRainStatus& s)
 {
-  const auto num = [](long v) -> std::string
+  const auto num = [](std::int64_t v) -> std::string
   {
     return v < 0 ? "null" : std::to_string(v);
   };
