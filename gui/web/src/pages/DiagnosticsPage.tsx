@@ -1,3 +1,6 @@
+import {useBladeTelemetry} from '../hooks/useBladeTelemetry';
+import {useHardwareBackend} from '../hooks/useHardwareBackend';
+import {motorDisplayValue, wheelControllerFromDiagnostics, wheelControllerFields, showEncoderWheel, type WheelRole} from '../utils/motorTelemetry';
 import {
     Alert,
     Button,
@@ -66,7 +69,7 @@ import {useSearchParams} from "react-router-dom";
 import {App} from "antd";
 import {useTranslation} from "react-i18next";
 import {useSettings} from "../hooks/useSettings.ts";
-import {computeBatteryPercent, getBatteryLevel} from "../utils/battery.ts";
+import {computeBatteryPercent, getBatteryLevel, hasBatteryReading} from "../utils/battery.ts";
 import {yawFromQuaternion, rollFromQuaternion, pitchFromQuaternion, wrapDeg180} from "../utils/quaternion.ts";
 import {useApi} from "../hooks/useApi.ts";
 import {useFusionGraphDiagnostics} from "../hooks/useFusionGraphDiagnostics.ts";
@@ -193,6 +196,9 @@ export const DiagnosticsPage = () => {
     const emergency = useEmergency();
     const power = usePower();
     const status = useStatus();
+    const hardware = useHardwareBackend();
+    const blade = useBladeTelemetry(hardware.loading ? undefined : hardware.backend);
+    const bladeEscStatus = blade.fresh ? status.mower_esc_status : undefined;
     const gps = useGPS();
     const gnssStatus = useGnssStatus();
     const pose = useFusionOdom();
@@ -213,6 +219,10 @@ export const DiagnosticsPage = () => {
     const {modal} = App.useApp();
     const {snapshot, loading, error: snapshotError, refresh} = useDiagnosticsSnapshot();
     const {diagnostics} = useDiagnostics();
+    const wheelControllers = {left_wheel: wheelControllerFromDiagnostics(diagnostics, 'left_wheel', nowMs),
+        right_wheel: wheelControllerFromDiagnostics(diagnostics, 'right_wheel', nowMs)};
+    const finitePower = (value: number | undefined) =>
+        typeof value === "number" && Number.isFinite(value) ? value : undefined;
     // Mobile uses collapsible panels; desktop shows sensors in the Robot tab.
     // Subscribe to the high-rate IMU stream only in the visible sensor view.
     // ?tab=parameters opens the advanced ROS parameters editor (formerly its
@@ -235,6 +245,8 @@ export const DiagnosticsPage = () => {
         () => computeBatteryPercent(highLevelStatus.battery_percent, power.v_battery, settings),
         [highLevelStatus.battery_percent, power.v_battery, settings],
     );
+
+    const batteryKnown = hasBatteryReading(power.v_battery);
 
     const gpsFix = useMemo(() => deriveGpsStatus(gnssStatus), [gnssStatus]);
     const gpsFixType = gpsFix.label;
@@ -293,8 +305,8 @@ export const DiagnosticsPage = () => {
     const cpuHot = cpuTemp > 70;
     const cpuWarm = cpuTemp > 55 && cpuTemp <= 70;
     const batteryLevel = getBatteryLevel(batteryPercent);
-    const batteryLow = batteryLevel === "danger";
-    const batteryMid = batteryLevel === "warn";
+    const batteryLow = batteryKnown && batteryLevel === "danger";
+    const batteryMid = batteryKnown && batteryLevel === "warn";
 
     // The emergency signal proper — only this drives the big "Emergency"
     // wording. Other danger causes (low battery, hot CPU, stopped container,
@@ -366,9 +378,21 @@ export const DiagnosticsPage = () => {
                     color={gpsOk ? "success" : gpsWarn ? "warning" : "error"}
                 />
                 <HealthBadge
-                    label={t('diagnosticsPage.batteryBadge', {value: HEALTH_BADGE_VALUE_MARKER})}
-                    color={batteryLevel === "ok" ? "success" : batteryLevel === "warn" ? "warning" : "error"}
-                    numericValue={batteryPercent.toFixed(0)}
+                    label={
+                        batteryKnown
+                            ? t('diagnosticsPage.batteryBadge', {value: HEALTH_BADGE_VALUE_MARKER})
+                            : t('diagnosticsPage.battery')
+                    }
+                    color={
+                        !batteryKnown
+                            ? "warning"
+                            : batteryLevel === "ok"
+                                ? "success"
+                                : batteryLevel === "warn"
+                                    ? "warning"
+                                    : "error"
+                    }
+                    numericValue={batteryKnown ? batteryPercent.toFixed(0) : undefined}
                 />
                 <HealthBadge
                     label={emergencyActive ? t('diagnosticsPage.emergencyUpper') : t('diagnosticsPage.noEmergency')}
@@ -445,10 +469,10 @@ export const DiagnosticsPage = () => {
         imuStatus.level < 2 && // OK or WARN; ERROR (2) / STALE (3) mean no fresh data
         (nowMs - imuStatus.receivedAt) < 15_000;
     const anatomyInputs = {
-        batteryPct: batteryPercent,
-        vBattery: power.v_battery ?? 0,
-        motorTempC: status.mower_motor_temperature ?? 0,
-        escTempC: status.mower_esc_temperature ?? 0,
+        batteryPct: batteryKnown ? batteryPercent : Number.NaN,
+        vBattery: batteryKnown ? (power.v_battery ?? Number.NaN) : Number.NaN,
+        motorTempC: blade.motorTemp,
+        escTempC: blade.escTemp,
         gpsLabel: anatomyGps.label,
         gpsOk: anatomyGps.percent >= 50,
         imuYawDeg: yaw,
@@ -458,7 +482,7 @@ export const DiagnosticsPage = () => {
         // fronts are unencoded casters whose RPM is always 0).
         wheelLeftRpm: wheelRpm.rl,
         wheelRightRpm: wheelRpm.rr,
-        bladeOn: (status.mower_motor_rpm ?? 0) > 0,
+        bladeOn: Number.isFinite(blade.rpm) ? blade.rpm > 0 : undefined,
         rain: status.rain_detected ?? false,
         dockCharging: status.is_charging ?? false,
     };
@@ -1255,17 +1279,20 @@ export const DiagnosticsPage = () => {
                         <Col span={8}>
                             <Statistic
                                 title={t('diagnosticsPage.battery')}
-                                value={batteryPercent}
+                                value={batteryKnown ? batteryPercent : "—"}
                                 precision={0}
+                                suffix={batteryKnown ? "%" : undefined}
                                 valueStyle={{
-                                    color: batteryPercent < 20 ? colors.danger : batteryPercent < 50 ? colors.warning : undefined,
+                                    color: batteryKnown
+                                        ? batteryPercent < 20 ? colors.danger : batteryPercent < 50 ? colors.warning : undefined
+                                        : undefined,
                                 }}
                             />
                         </Col>
                         <Col span={8}>
                             <Statistic
                                 title={t('diagnosticsPage.voltage')}
-                                value={power.v_battery}
+                                value={finitePower(power.v_battery)}
                                 precision={2}
 
                             />
@@ -1282,7 +1309,7 @@ export const DiagnosticsPage = () => {
                         <Col span={8}>
                             <Statistic
                                 title={t('diagnosticsPage.chargeCurrent')}
-                                value={clampTinyToZero(power.charge_current) ?? undefined}
+                                value={finitePower(clampTinyToZero(power.charge_current) ?? undefined)}
                                 precision={2}
                                 valueStyle={{
                                     color: highLevelStatus.is_charging && (power.charge_current ?? 0) > 0
@@ -1294,7 +1321,7 @@ export const DiagnosticsPage = () => {
                         <Col span={8}>
                             <Statistic
                                 title={t('diagnosticsPage.chargerVoltage')}
-                                value={clampTinyToZero(power.v_charge) ?? undefined}
+                                value={finitePower(clampTinyToZero(power.v_charge) ?? undefined)}
                                 precision={2}
                             />
                         </Col>
@@ -1795,15 +1822,16 @@ export const DiagnosticsPage = () => {
                         {[
                             {label: t('diagnosticsPage.frontLeft'),  rpm: wheelRpm.fl, ticks: wheelTicks.wheel_ticks_fl, dir: wheelTicks.wheel_direction_fl, validMask: 1},
                             {label: t('diagnosticsPage.frontRight'), rpm: wheelRpm.fr, ticks: wheelTicks.wheel_ticks_fr, dir: wheelTicks.wheel_direction_fr, validMask: 2},
-                            {label: t('diagnosticsPage.rearLeft'),   rpm: wheelRpm.rl, ticks: wheelTicks.wheel_ticks_rl, dir: wheelTicks.wheel_direction_rl, validMask: 4},
-                            {label: t('diagnosticsPage.rearRight'),  rpm: wheelRpm.rr, ticks: wheelTicks.wheel_ticks_rr, dir: wheelTicks.wheel_direction_rr, validMask: 8},
-                        // Only show wheels the firmware reports encoders for
-                        // (rear-only on Mowgli) — permanent "no encoder
+                            {role: 'left_wheel' as WheelRole, label: t('diagnosticsPage.rearLeft'),   rpm: wheelRpm.rl, ticks: wheelTicks.wheel_ticks_rl, dir: wheelTicks.wheel_direction_rl, validMask: 4},
+                            {role: 'right_wheel' as WheelRole, label: t('diagnosticsPage.rearRight'),  rpm: wheelRpm.rr, ticks: wheelTicks.wheel_ticks_rr, dir: wheelTicks.wheel_direction_rr, validMask: 8},
+                        // One wheel renderer: encoder readings plus optional source-normalized controller fields.
+                        // Native wheel visibility remains unchanged.
+                        // Rear-only on Mowgli — permanent "no encoder
                         // reading" slots are noise. Until the first message
                         // arrives (mask 0/undefined), show all four.
                         ].filter(w => {
                             const mask = wheelTicks.valid_wheels ?? 0;
-                            return mask === 0 || (mask & w.validMask) !== 0;
+                            return showEncoderWheel(mask, w.validMask, 'role' in w && w.role ? wheelControllers[w.role] : undefined);
                         }).map(w => {
                             const valid = ((wheelTicks.valid_wheels ?? 0) & w.validMask) !== 0;
                             return (
@@ -1811,10 +1839,10 @@ export const DiagnosticsPage = () => {
                                     <Statistic
                                         className="diagnostics-sign-statistic"
                                         title={w.label}
-                                        value={valid ? w.rpm : undefined}
+                                        value={valid && Number.isFinite(w.rpm) ? w.rpm : "—"}
                                         precision={0}
                                         valueStyle={{
-                                            color: !valid ? colors.muted :
+                                            color: !valid || !Number.isFinite(w.rpm) ? colors.muted :
                                                    Math.abs(w.rpm) > 5 ? colors.success : undefined,
                                         }}
                                     />
@@ -1827,6 +1855,12 @@ export const DiagnosticsPage = () => {
                                             t('diagnosticsPage.noEncoderReading')
                                         )}
                                     </Typography.Text>
+                                    {'role' in w && w.role && wheelControllers[w.role] && <Space direction="vertical" size={0} style={{marginTop: 8}}>
+                                        <Typography.Text>{t('diagnosticsPage.escStatus')}: {t(`wheelTelemetry.states.${wheelControllers[w.role]!.state}`)}</Typography.Text>
+                                        {wheelControllerFields(wheelControllers[w.role]).map(field => <Typography.Text key={field.key} type="secondary" style={{fontSize: 11}}>
+                                            {t(`wheelTelemetry.${field.key}`)}: {motorDisplayValue(field.value, field.precision)}{Number.isFinite(field.value) && field.unit ? ` ${field.unit}` : ''}
+                                        </Typography.Text>)}
+                                    </Space>}
                                 </Col>
                             );
                         })}
@@ -1838,7 +1872,7 @@ export const DiagnosticsPage = () => {
                         {t('diagnosticsPage.tickFactorUnit')}
                         {" "}
                         {t('diagnosticsPage.bodyOmegaLabel')}{" "}
-                        <Typography.Text code>{wheelRpm.bodyOmega.toFixed(3)}</Typography.Text>{" "}
+                        <Typography.Text code>{motorDisplayValue(wheelRpm.bodyOmega, 3)}</Typography.Text>{" "}
                         rad/s.
                         <br/>
                             {t('diagnosticsPage.perWheelTempNote')}
@@ -1866,24 +1900,24 @@ export const DiagnosticsPage = () => {
                         <Col xs={12} lg={4}>
                             <Statistic
                                 title={t('diagnosticsPage.escStatus')}
-                                value={ESC_STATUS[status.mower_esc_status ?? 0]
-                                    ? t(ESC_STATUS[status.mower_esc_status ?? 0].labelKey)
-                                    : t('diagnosticsPage.escUnknown', {code: status.mower_esc_status})}
+                                value={ESC_STATUS[bladeEscStatus ?? -1]
+                                    ? t(ESC_STATUS[bladeEscStatus ?? -1].labelKey)
+                                    : t('diagnosticsPage.escUnknown', {code: bladeEscStatus ?? "—"})}
                                 valueStyle={{
-                                    color: ESC_STATUS[status.mower_esc_status ?? 0]?.color === "error" ? colors.danger
-                                        : ESC_STATUS[status.mower_esc_status ?? 0]?.color === "warning" ? colors.warning
+                                    color: ESC_STATUS[bladeEscStatus ?? -1]?.color === "error" ? colors.danger
+                                        : ESC_STATUS[bladeEscStatus ?? -1]?.color === "warning" ? colors.warning
                                         : undefined,
                                 }}
                             />
                         </Col>
                         <Col xs={12} lg={4}>
-                            <Statistic title={`${t('diagnosticsPage.escTemp')} (°C)`} value={status.mower_esc_temperature} precision={1}/>
+                            <Statistic title={`${t('diagnosticsPage.escTemp')} (°C)`} value={Number.isFinite(blade.escTemp) ? blade.escTemp : "—"} precision={1}/>
                         </Col>
                         <Col xs={12} lg={4}>
-                            <Statistic title={`${t('diagnosticsPage.motorTemp')} (°C)`} value={status.mower_motor_temperature} precision={1}/>
+                            <Statistic title={`${t('diagnosticsPage.motorTemp')} (°C)`} value={Number.isFinite(blade.motorTemp) ? blade.motorTemp : "—"} precision={1}/>
                         </Col>
                         <Col xs={12} lg={4}>
-                            <Statistic title={t('diagnosticsPage.motorRpm')} value={status.mower_motor_rpm} precision={0}/>
+                            <Statistic title={t('diagnosticsPage.motorRpm')} value={Number.isFinite(blade.rpm) ? blade.rpm : "—"} precision={0}/>
                         </Col>
                         <Col xs={24} lg={8}>
                             <BladeDirectionDisplay/>
