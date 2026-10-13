@@ -8,4 +8,4 @@
 # the gitlink AND this file in the same commit; CI fails when they disagree.
 ros2/src/external/universal-gnss 9a329cc216ed137d0e375a4cfe1f5c26e1dd52d0  # v0.7.4-rc5
 ros2/src/opennav_coverage d6e41a298c5e9767cc2a42c9fafa7ca41b9bf089
-ros2/src/external/mowglimavros 5328dd70d1fce34ee9e0c81ff3883b0260a712de  # MowgliMAVROS Universal GNSS v0.7.4-rc5 integration
+ros2/src/external/mowglimavros 4f1ac1410488b118d2563992df96d08de9730598  # MowgliMAVROS Universal GNSS v0.7.4-rc5 integration
