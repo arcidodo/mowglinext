@@ -530,8 +530,15 @@ def s10_lift(probe, rig, R, esc):
         rig.ll.lifted_wheels = 2
         t0 = rig.now_ms()
     tz = rig.first_time_effective_zero(DRIVES, t0, 3000)
-    R.check(S, "both wheels lifted: zero within the board's 100 ms lift period + chain (< 300 ms)",
-            tz is not None and tz - t0 < 300, f'{(tz - t0) if tz else float("nan"):.0f} ms')
+    # Controller command receipts have timestamps; polling effective duty
+    # every 2 ms introduces scheduler jitter. Explicit zero commands also
+    # guarantee that an ESC watchdog alone cannot make this test pass.
+    zeros = [rig.first_zero_command(name, t0, 3000) for name in DRIVES]
+    t_cmd = max(zeros) if all(t is not None for t in zeros) else None
+    R.check(S, "both wheels lifted: zero duty received within 100 ms + chain (< 300 ms)",
+            t_cmd is not None and tz is not None and t_cmd - t0 < 300,
+            f'cmd={(t_cmd - t0) if t_cmd is not None else float("nan"):.0f} ms; '
+            f'polled={(tz - t0) if tz is not None else float("nan"):.0f} ms')
     em = probe.get('emergency')
     wait_for(lambda: probe.get('emergency').reason == 'Lift detected', 1)
     R.check(S, 'reason "Lift detected"', probe.get('emergency').reason == 'Lift detected')
@@ -894,9 +901,14 @@ def s20_crash(probe, rig, R, esc, bridge):
     wait_for(lambda: rig.snapshot()['latch'], 1.5)
     with rig.lock:
         latched = [t for t in rig.ll.latch_events if t >= t0]
-    dt = (latched[0] - t0) if latched else float('nan')
-    R.check(S, 'board latched on the missing heartbeat (~500 ms)', bool(latched) and 450 < dt < 650,
-            f'{dt:.0f} ms')
+        last_heartbeat = rig.ll.last_heartbeat_ms
+    # The watchdog starts at the last heartbeat, not at SIGKILL. The latter
+    # may occur partway through the 500 ms heartbeat period.
+    dt = (latched[0] - last_heartbeat) if latched else float('nan')
+    kill_dt = (latched[0] - t0) if latched else float('nan')
+    R.check(S, 'board latched 500 ms after its last heartbeat',
+            bool(latched) and 500 < dt < 650,
+            f'heartbeat age={dt:.0f} ms; after kill={kill_dt:.0f} ms')
     R.check(S, 'robot physically stopped', wait_for(lambda: abs(rig.snapshot()['v']) < 0.01, 2))
 
 
