@@ -731,6 +731,15 @@ void MqttBridgeNode::create_subscriptions()
   // (re)starts after this bridge has already delivered it.
   pub_external_rain_ =
       create_publisher<std_msgs::msg::Bool>("/external_rain", rclcpp::QoS(1).transient_local());
+  // The mower's own reading of that verdict (state, whether it is counted, ages), JSON from
+  // behavior_tree_node. transient_local so a bridge that starts late still gets the last one.
+  sub_external_rain_state_ =
+      create_subscription<std_msgs::msg::String>("/behavior_tree_node/external_rain_state",
+                                                 rclcpp::QoS(1).transient_local(),
+                                                 [this](std_msgs::msg::String::ConstSharedPtr msg)
+                                                 {
+                                                   on_external_rain_state(msg);
+                                                 });
   mqtt_client_->subscribe(full_topic("external_rain"),
                           [this](const std::string& topic,
                                  const std::string& payload,
@@ -1016,6 +1025,16 @@ void MqttBridgeNode::on_mqtt_external_rain(const std::string& /*topic*/,
               "External rain: %s%s",
               *wet ? "wet" : "dry",
               retained ? " (retained)" : "");
+}
+
+void MqttBridgeNode::on_external_rain_state(std_msgs::msg::String::ConstSharedPtr msg)
+{
+  if (msg->data.empty())
+  {
+    return;
+  }
+  // Already JSON from behavior_tree_node; relayed as-is, retained like high_level_status.
+  mqtt_client_->publish(full_topic("external_rain_state"), msg->data, /*retain=*/true);
 }
 
 // ---------------------------------------------------------------------------
