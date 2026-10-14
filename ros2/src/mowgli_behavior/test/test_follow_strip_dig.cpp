@@ -275,14 +275,7 @@ protected:
           response->success = blade_service_success.load();
         });
 
-    executor = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
-    executor->add_node(ctx->node);
-    executor->add_node(server_node);
-    spinner = std::thread(
-        [this]()
-        {
-          executor->spin();
-        });
+    startExecutor();
 
     blackboard = BT::Blackboard::create();
     blackboard->set("context", ctx);
@@ -295,13 +288,43 @@ protected:
     follow->holdAccept(false);
     navigate->holdAccept(false);
     tree.reset();
+    stopExecutor();
+    follow.reset();
+    navigate.reset();
+  }
+
+  void startExecutor()
+  {
+    executor = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+    executor->add_node(ctx->node);
+    executor->add_node(server_node);
+    spinner = std::thread(
+        [this]()
+        {
+          executor->spin();
+        });
+  }
+
+  void stopExecutor()
+  {
     executor->cancel();
     if (spinner.joinable())
     {
       spinner.join();
     }
-    follow.reset();
-    navigate.reset();
+    executor.reset();
+  }
+
+  void removeBladeService()
+  {
+    // A spinning executor's wait set can retain the service even after the
+    // fixture releases it. Join its workers and destroy the wait set first;
+    // the node and callback group only keep weak service references.
+    const std::weak_ptr<rclcpp::Service<MowerControl>> removed_service = blade_service;
+    stopExecutor();
+    blade_service.reset();
+    startExecutor();
+    ASSERT_TRUE(removed_service.expired()) << "the fake mower-control service is still owned";
   }
 
   /// `yaw` matters: the progress cursor only accepts a path pose oriented with
@@ -612,7 +635,7 @@ TEST_F(FollowStripDigTest, MissingServiceDoesNotRenewTheReadinessTimeout)
 {
   auto probe = ctx->bladeClient();
   ASSERT_TRUE(probe->wait_for_service(std::chrono::seconds(5)));
-  blade_service.reset();
+  ASSERT_NO_FATAL_FAILURE(removeBladeService());
   const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (probe->service_is_ready() && std::chrono::steady_clock::now() < discovery_deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -636,7 +659,7 @@ TEST_F(FollowStripDigTest, ServiceAppearingDuringWaitGetsOnWithoutRestartingGate
 {
   auto probe = ctx->bladeClient();
   ASSERT_TRUE(probe->wait_for_service(std::chrono::seconds(5)));
-  blade_service.reset();
+  ASSERT_NO_FATAL_FAILURE(removeBladeService());
   const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
   while (probe->service_is_ready() && std::chrono::steady_clock::now() < discovery_deadline)
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
