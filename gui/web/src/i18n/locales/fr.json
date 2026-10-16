@@ -1054,7 +1054,7 @@
     "soilWetTitle": "Attention : le jardin est humide (IrriSense)",
     "soilWetBlocking": "tontes planifiées suspendues",
     "digEscalationTitle": "Tonte arrêtée — creusement répété détecté",
-    "digEscalationBody": "La tondeuse n'a pas pu se dégager et s'est arrêtée à {{distance}} m de l'endroit (il faut {{required}} m pour réinitialiser). Éloignez-la davantage, puis réessayez.",
+    "digEscalationBody": "La tondeuse n'a pas pu se dégager et s'est arrêtée à {{distance}} m de l'endroit. Reprenez d'ici (un dig de plus à cet endroit l'arrête de nouveau), éloignez-la de plus de {{required}} m, ou renvoyez-la à la station.",
     "digEscalationReady": "Éloignée de {{distance}} m de l'endroit — prête à réinitialiser.",
     "digEscalationClear": "Réinitialiser et reprendre"
   },
@@ -1742,7 +1742,7 @@
     },
     "DIG_OBSTRUCTION": {
       "label": "Blocage (creusage)",
-      "friendly": "Arrêt — creuse au même endroit. Dégagez-le, puis Lecture ou Retour base"
+      "friendly": "Arrêt — creuse au même endroit. Vérifiez, puis Lecture pour reprendre ou Retour base"
     },
     "UNDOCK_FAILED": {
       "label": "Échec départ",
@@ -5172,5 +5172,11 @@
     "mapAlt": "Tondeuse assemblée selon la description du robot en service",
     "dockStyle": "Base stylisée",
     "dockNote": "Base illustrative · 67 × 46 cm. Associée au châssis dans Matériel et affichée automatiquement sur la carte."
+  },
+  "digObstructionAck": {
+    "title": "Reprendre depuis le point bloqué ?",
+    "body": "Les roues ont creusé plusieurs fois ici et la tondeuse n'est qu'à {{distance}} m du point. Vérifiez que rien n'est coincé dessous ou devant. Si elle creuse encore une fois à cet endroit, elle s'arrêtera de nouveau.",
+    "ok": "Reprendre la tonte",
+    "cancel": "Annuler"
   }
 }

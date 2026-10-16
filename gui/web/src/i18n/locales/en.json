@@ -1054,7 +1054,7 @@
     "soilWetTitle": "Careful: the garden is wet (IrriSense)",
     "soilWetBlocking": "scheduled mows are suspended",
     "digEscalationTitle": "Mowing halted — repeat dig detected",
-    "digEscalationBody": "The mower couldn't free itself and stopped {{distance}} m from the spot (needs {{required}} m to clear). Move it further away, then try again.",
+    "digEscalationBody": "The mower couldn't free itself and stopped {{distance}} m from the spot. Resume from here (one more dig at this spot stops it again), move it more than {{required}} m away, or send it home.",
     "digEscalationReady": "Moved {{distance}} m from the spot — ready to clear.",
     "digEscalationClear": "Clear & resume"
   },
@@ -1746,7 +1746,7 @@
     },
     "DIG_OBSTRUCTION": {
       "label": "Dig obstruction",
-      "friendly": "Stopped — kept digging at the same spot. Lift it clear, then Play or Home"
+      "friendly": "Stopped — kept digging at the same spot. Check it, then Play to resume or Home"
     },
     "UNDOCK_FAILED": {
       "label": "Start failed",
@@ -5172,5 +5172,11 @@
     "mapAlt": "Assembled mower from the running robot description",
     "dockStyle": "Styled dock",
     "dockNote": "Illustrative dock · 67 × 46 cm. Paired with the chassis in Hardware and shown automatically on the map."
+  },
+  "digObstructionAck": {
+    "title": "Resume from the blocked spot?",
+    "body": "The wheels dug in repeatedly here and the mower is still {{distance}} m from the spot. Check that nothing is stuck under or in front of it. If it digs in once more at this spot, it will stop again.",
+    "ok": "Resume mowing",
+    "cancel": "Cancel"
   }
 }
