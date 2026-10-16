@@ -15,6 +15,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <future>
@@ -22,6 +23,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -156,6 +158,26 @@ ResumeLocation resolveResumeLocation(const std::vector<nav_msgs::msg::Path>& uni
                                      std::size_t cursor,
                                      std::size_t total_poses);
 
+/// Where FollowStrip drives FIRST: `unit` is the first unit not recorded in `done` (see
+/// nextUndoneUnit); `local` is the resume offset when the persisted cursor lands in that very unit,
+/// 0 (its front) otherwise. A cursor that lands in a LATER unit is trimmed when that unit is
+/// reached, not before: the earlier incomplete units are driven first. `valid` is false when every
+/// unit is already done.
+struct FirstDrive
+{
+  bool valid = false;
+  std::size_t unit = 0;
+  std::size_t local = 0;
+};
+
+/// The single mapping behind both FollowStrip's first unit and PlanCoverageArea's first transit
+/// goal. `cursor_valid` is false when the persisted cursor must be ignored (stale plan).
+FirstDrive resolveFirstDrive(const std::vector<nav_msgs::msg::Path>& units,
+                             const std::set<std::size_t>& done,
+                             bool cursor_valid,
+                             std::size_t cursor,
+                             std::size_t total_poses);
+
 // ---------------------------------------------------------------------------
 // refreshSwathProgress — publish the GUI-facing live swath progress for the
 // area currently being mown.
@@ -272,6 +294,8 @@ public:
 
 private:
   void setBladeEnabled(bool enabled);
+  bool bladeReadyForDispatch(const std::shared_ptr<BTContext>& ctx);
+  void beginBladeReadyWait(const std::shared_ptr<BTContext>& ctx);
   // Cancel every in-flight follow / transit goal, reset the transit state
   // machine and switch the blade off. Shared by onHalted() and yieldToFleet().
   void abortActiveGoals(const std::shared_ptr<BTContext>& ctx);
@@ -616,12 +640,14 @@ private:
   // to a >kSegmentTransitGap segment start blade-on.
   static constexpr double kTransitServerWaitSec = 5.0;
 
-  // Blade spinup delay — wait before sending the FIRST segment goal
-  static constexpr double kBladeSpinupDelaySec = 1.5;
-  std::chrono::steady_clock::time_point blade_start_time_;
-  /// False when the first unit needs a blade-off transit: the blade stays off
-  /// on start and the spin-up wait is skipped (bladeSpinupBeforeFirstUnit).
-  bool blade_spinup_pending_{true};
+  BladeReadyGate blade_ready_gate_;
+  bool blade_requested_on_{false};
+  bool blade_enable_sent_{false};
+  bool blade_ready_{false};
+  bool blade_dispatch_pending_{false};
+  bool blade_gate_failed_{false};
+  std::shared_ptr<std::atomic<int>> blade_command_result_;
+  std::optional<int64_t> blade_request_id_;
   /// Transit watchdog (transitDeadlineSec): started when a blade-off transit
   /// goal is sent; on expiry the goal is cancelled ONCE and the existing
   /// aborted/cancelled path skips the unit.

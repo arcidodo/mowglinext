@@ -7,6 +7,21 @@ export const APPEARANCE_REGISTRY = {
     "defaultShell": "sculpted",
     "defaultDock": "standard",
     "shells": {
+        "tron": {
+            "size": [2059, 764],
+            "top": [136, 32, 553, 702],
+            "side": [865, 204, 1111, 440],
+            "files": {"top": "tron.png", "side": "tron.png"},
+            "cells": {"top": [0, 0, 800, 764], "side": [800, 0, 1259, 764]},
+            "label": {"en": "Tron-inspired", "fr": "Inspiré Tron"},
+            "dock": "styled",
+            "mapMaxSize": 384,
+            "wheelsOverShell": {"top": false, "side": true},
+            "paint": {
+                "masks": {"top": "tron-top-paint.svg", "side": "tron-side-paint.svg"},
+                "suggestedColour": "#3f8e79"
+            }
+        },
         "rounded": {
             "size": [1774, 887],
             "top": [75, 63, 620, 788],

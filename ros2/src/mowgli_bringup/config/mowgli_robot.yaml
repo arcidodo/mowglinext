@@ -1,12 +1,19 @@
 # =============================================================================
-# mowgli_robot.yaml — Centralized robot-specific configuration
+# mowgli_robot.yaml — Versioned robot configuration defaults
 #
-# All physical, operational, and safety parameters for the Mowgli robot mower.
-# Inspired by OpenMower's mower_config.sh but in ROS2 YAML format.
+# This file contains the COMPLETE DEFAULT configuration shipped with MowgliNext.
 #
-# This file is the single source of truth for robot-specific values.
-# Other config files (nav2_params, coverage_planner, etc.) should reference
-# or be overridden by these values at launch time.
+# The installed per-robot configuration lives in:
+#   docker/config/mowgli/mowgli_robot.yaml
+#
+# That installed file is deliberately SPARSE and contains only operator choices
+# and calibration outputs. At launch, robot_config_util.load_robot_params()
+# deep-merges the installed sparse configuration OVER this template.
+#
+# To change a global default, edit this file.
+# To override a value for one robot, set it in the installed sparse file.
+# To restore an installed value to its default, delete that key from the sparse
+# file so it falls through to this template.
 # =============================================================================
 
 mowgli:
@@ -63,6 +70,8 @@ mowgli:
     # Body bottom relative to rear axle. Zero preserves legacy geometry.
     # Hardware presets propose explicit model-specific offsets; applying one
     # is an operator choice, not a geometry change during upgrade.
+    # Generic fallback; selected preset upgrade defaults come from the generated
+    # model_geometry_defaults.json. An explicitly saved offset always wins.
     chassis_z_offset: 0.0
     chassis_mass_kg: 8.76
 
@@ -450,6 +459,15 @@ mowgli:
     # ROS2 restart. Requires firmware with safe stopped reversal support and
     # a blade assembly suitable for both directions. Read at ROS2 startup.
     blade_auto_reverse: false
+    # New coverage goals wait for fresh, active blade-controller reports above
+    # this RPM for 0.3 s. The threshold matches mow_progress_min_blade_rpm;
+    # verify actual cutting readiness on the installed blade/firmware.
+    blade_ready_min_rpm: 1000.0
+    # Legacy fallback ONLY if no blade-controller telemetry has ever arrived.
+    # An accepted ON request is required. Stale/low-RPM telemetry fails closed.
+    blade_spinup_delay_sec: 1.5
+    # Maximum steady-clock wait; must exceed the positive fallback delay.
+    blade_ready_timeout_sec: 6.0
     mowing_speed: 0.2              # m/s during coverage paths (field-validated comfortable cut speed)
     transit_speed: 0.2             # m/s during point-to-point navigation (→ RPP max_linear_vel)
     # transit_dynamic_window: use Dynamic Window Pure Pursuit (DWPP, new in Nav2

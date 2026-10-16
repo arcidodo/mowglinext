@@ -25,3 +25,11 @@ for(const [name,mutate] of [
     const registry=structuredClone(APPEARANCE_REGISTRY);mutate(registry);
     await assert.rejects(()=>validateRegistry(registry));
 });
+
+// These assets cross the frontend/backend/ROS image boundary; never hand-copy defaults.
+import {modelGeometryDefaults, syncModelGeometryDefaults} from './model-geometry-defaults.mjs';
+test('upgrade geometry assets match the model presets', async () => {
+    await syncModelGeometryDefaults();
+    assert.deepEqual(modelGeometryDefaults([{value:'new-model', defaults:{chassis_z_offset:-.071, wheel_radius:.12}}]),
+        {'new-model':{chassis_z_offset:-.071}});
+});

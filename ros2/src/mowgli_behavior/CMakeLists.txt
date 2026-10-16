@@ -663,6 +663,11 @@ if(BUILD_TESTING)
     TIMEOUT 180
   )
 
+  # Capture ROS 2 logs reliably in the checkpoint regression test.
+  set_tests_properties(test_follow_strip_dig PROPERTIES
+    ENVIRONMENT "RCUTILS_LOGGING_USE_STDOUT=1;RCUTILS_LOGGING_BUFFERED_STREAM=0"
+  )
+
   target_include_directories(test_follow_strip_dig PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -1098,6 +1103,9 @@ if(BUILD_TESTING)
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
   )
+
+  ament_add_gtest(test_blade_ready test/test_blade_ready.cpp)
+  target_include_directories(test_blade_ready PRIVATE include)
 
   # Pure dock-alignment math (header-only): the along/cross-track decomposition
   # logged at claimed contact, and the per-undock dock_pose_yaw drift check.

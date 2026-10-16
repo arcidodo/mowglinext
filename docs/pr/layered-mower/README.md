@@ -275,13 +275,13 @@ establish its coverage or edge-clearance behaviour.
 
 ## Upgrade compatibility review fixes
 
-Existing sparse configs retain their previous geometry: the package/schema/launch
-chassis-bottom default is zero, and the internal caster sentinel retains
-`chassis_center_x + chassis_length / 2 - caster_radius`. Hardware still displays
-an ordinary numeric caster position; editing freezes that position, and selecting
-a model preset explicitly proposes its model-specific geometry. Explicit saved
-caster and chassis offsets continue to win. This avoids moving visual/collision
-geometry simply by upgrading.
+Sparse upgrades now inherit a missing chassis vertical offset from the selected
+model preset. The GUI and ROS consume generated copies of the same preset data;
+there is no separate 500/500B offset table. Explicit saved values, including zero,
+continue to win. CUSTOM/unknown models retain the generic template fallback.
+Caster placement still uses its existing chassis-derived fallback; other preset
+settings are never replayed during an upgrade. This changes the URDF visual and
+collision-box height when a newly introduced chassis offset was absent.
 
 The retired map appearance preference is not migrated. Users of the earlier dev
 build can reselect the new assembled RM1000 shell in Hardware. There is no static
@@ -339,3 +339,35 @@ npx playwright test --config playwright.robot-artwork.config.ts --workers=3
 ### Chromium reference
 
 ![Chromium sensor editor](browser-chromium.png)
+
+
+## Preset-backed chassis height on upgrade
+
+`gui/web/src/constants/mowerModels.ts` remains the authored preset source. Run
+`npm run generate:model-geometry` from `gui/web` after changing its opted-in
+upgrade fields. The generator emits identical `model_geometry_defaults.json`
+assets for the GUI and ROS images; the Go asset parity test (`go test ./...` in GUI CI) rejects stale data.
+Only `chassis_z_offset` is opted in. This is not an automatic reapplication of
+wheel dimensions, sensor mounts, calibration, charging settings or the full preset.
+
+The read/default/reset/save paths and ROS config merge use the selected preset.
+Missing model selection follows the existing template model; CUSTOM, unknown
+models and presets without this key keep the generic fallback. Explicit offsets
+(including zero) win and survive unrelated saves. No configuration file is
+rewritten merely by reading it. Selecting a different model in the form updates
+its reset-to-default value before Save; late responses for an old choice are ignored.
+GUI and ROS must both contain this change for the preview and running URDF to agree.
+
+The current Yardforce 500/500B presets supply -0.050 m: with their 0.100 m wheel
+radius and 0.190 m shell height, estimated ground clearance is 0.050 m and shell
+top is 0.240 m. This remains photo-estimated, not a new hardware measurement.
+**Safety-critical geometry:** the URDF visual and collision box both move down;
+wheel, sensor and blade frames and the 2D footprint do not move.
+
+**HARDWARE_REQUIRED:** baseline is this PR's preset-generated upgrade implementation,
+YardForce500/B model, wheel_radius=0.100, chassis_height=0.190, chassis_z_offset=-0.050.
+No robot or firmware was changed in this verification. On the intended physical
+unit, powered off with blades removed and secured on level ground, measure ground
+to the lowest body skirt and highest shell point. Accept this provisional fit only
+if those readings are within 5 mm of 50 mm and 240 mm; otherwise save measured
+height/offset overrides and record the unit, repository/URDF revision and firmware.

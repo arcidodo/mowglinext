@@ -10,6 +10,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <string>
@@ -29,6 +30,74 @@ namespace
 {
 
 constexpr double kDensifyStep = 0.10;  // m between ring polyline points
+
+// Record the actual upstream argmin, rather than infer it from clipped endpoints.
+// Only the opt-in replay path uses this observer. The normal planner uses BruteForce.
+class TracingBruteForce : public f2c::sg::BruteForce
+{
+public:
+  PlanningTrace* trace = nullptr;
+  std::size_t cell_index = 0;
+
+  double computeBestAngle(const f2c::obj::SGObjective& objective,
+                          double width,
+                          const f2c::types::Cell& cell,
+                          f2c::sg::SwathOverlapType distribution) const override
+  {
+    const double angle =
+        f2c::sg::BruteForce::computeBestAngle(objective, width, cell, distribution);
+    if (trace)
+      trace->stages.push_back({"auto_angle." + std::to_string(cell_index), {}, {angle}});
+    return angle;
+  }
+};
+
+// Read coordinates directly: F2C clone/export helpers round-trip through WKT,
+// which is not an exact snapshot of the in-memory doubles.
+void traceCells(PlanningTrace* trace, const char* name, const f2c::types::Cells& cells)
+{
+  if (!trace)
+    return;
+  for (std::size_t c = 0; c < cells.size(); ++c)
+  {
+    const auto cell = cells.getGeometry(c);
+    PlanningTrace::Stage stage{std::string(name) + "." + std::to_string(c), {}};
+    for (std::size_t r = 0; r < cell.size(); ++r)
+    {
+      const auto ring = cell.getGeometry(r);
+      std::vector<std::pair<double, double>> points;
+      for (std::size_t p = 0; p < ring.size(); ++p)
+      {
+        const auto point = ring.getGeometry(p);
+        points.emplace_back(point.getX(), point.getY());
+      }
+      stage.paths.push_back(std::move(points));
+    }
+    trace->stages.push_back(std::move(stage));
+  }
+}
+
+void traceSwaths(PlanningTrace* trace,
+                 const char* name,
+                 std::size_t cell,
+                 const f2c::types::Swaths& swaths)
+{
+  if (!trace)
+    return;
+  PlanningTrace::Stage stage{std::string(name) + "." + std::to_string(cell), {}};
+  for (const auto& swath : swaths)
+  {
+    const auto line = swath.getPath();
+    std::vector<std::pair<double, double>> points;
+    for (std::size_t p = 0; p < line.size(); ++p)
+    {
+      const auto point = line.getGeometry(p);
+      points.emplace_back(point.getX(), point.getY());
+    }
+    stage.paths.push_back(std::move(points));
+  }
+  trace->stages.push_back(std::move(stage));
+}
 
 // Format a "dropped <what> <val><cmp><thresh>" diagnostics line without pulling
 // in <sstream>/<iomanip>. Values are short distances/areas, so 4 decimals is
@@ -795,6 +864,16 @@ std::vector<std::pair<double, double>> enforcePivotCornerContract(
   return out;
 }
 
+// A corner sharper than this is an in-place pivot corner wherever the pivot sweep fits (see
+// pivotSharpCorners and BoustrophedonPlan's corner_pivot_limits): a ring corner that sharp is NOT
+// rounded in the ring stage and an unrounded one is pivoted in buildContinuousSubPaths. Below it
+// FTC turns through the corner while moving (slowing) without cutting it, and the fillet stays.
+constexpr double kSharpCornerPivotRad = 60.0 * M_PI / 180.0;
+// The outermost ring's convex corner vertices can poke a few cm PAST the recorded line (#388, the
+// clamp in buildContinuousSubPaths pulls them back). The ring stage judges the pivot sweep before
+// that clamp, so it allows this much extra reach: after the clamp the pivot only fits better.
+constexpr double kRingCornerPokeSlackM = 0.05;
+
 // Round any corner of `pts` whose turn angle exceeds `max_turn_rad` with a
 // circular fillet tangent to both edges (cusp-free in/out), so the WHOLE path
 // has no >90° turn. Such corners are intrinsic to the headland rings, which
@@ -813,7 +892,8 @@ std::vector<std::pair<double, double>> roundSharpCorners(
     double max_turn_rad,
     double fillet_r,
     double min_radius,
-    double step)
+    double step,
+    const std::function<bool(const std::pair<double, double>&, double)>& keep_sharp = {})
 {
   if (pts.size() < 3)
   {
@@ -844,6 +924,13 @@ std::vector<std::pair<double, double>> roundSharpCorners(
     c = std::max(-1.0, std::min(1.0, c));
     const double turn = std::acos(c);  // exterior turn angle [0, π]
     if (turn <= max_turn_rad)
+    {
+      out.push_back(B);
+      continue;
+    }
+    // The caller wants this corner SHARP (it will be an in-place pivot corner): a fillet
+    // would cut the tip off and leave it uncut.
+    if (keep_sharp && keep_sharp(B, turn))
     {
       out.push_back(B);
       continue;
@@ -1241,9 +1328,23 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
                                     bool perpendicular,
                                     int connector_max_headland_passes,
                                     const std::optional<std::pair<double, double>>& start_hint,
-                                    double min_boundary_feature_width)
+                                    double min_boundary_feature_width,
+                                    const PivotJoinLimits* corner_pivot_limits,
+                                    PlanningTrace* trace)
 {
   BoustrophedonPlan plan;
+  if (trace)
+    trace->stages.clear();
+  // Ring corners the robot will pivot at stay sharp (see the ring stage below). The sweep is
+  // judged with a few cm of slack for the outermost ring's pre-clamp corner poke.
+  const bool pivot_ring_corners =
+      corner_pivot_limits != nullptr && corner_pivot_limits->sweep_radius > 0.0;
+  PivotJoinLimits ring_pivot_limits;
+  if (pivot_ring_corners)
+  {
+    ring_pivot_limits = *corner_pivot_limits;
+    ring_pivot_limits.boundary_margin += kRingCornerPokeSlackM;
+  }
   // Polygon area the planned-coverage fraction is taken over (the operator's
   // authorised area, before any inset). Instrumentation only.
   plan.diagnostics.field_area = field_cell.area();
@@ -1510,6 +1611,7 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
   // connector_max_headland_passes. See the field doc: this is what the #388
   // clamp, the server's verify, and every ring-involving join stay bound to.
   plan.connector_clearance_boundary = ringCenterlineBoundary(0);
+  traceCells(trace, "safe_cell", safe_cells);
 
   // swath_turn_envelope (issue #497): populated ONLY when the limit actually
   // restricts something — a limit of 0/negative (unlimited) or >= n_rings is a
@@ -1657,13 +1759,26 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
             const auto& fillet_boundary =
                 plan.safe_boundary.size() >= 3 ? plan.safe_boundary : field_outer_pts;
             constexpr double kRingCornerThreshold = 30.0 * M_PI / 180.0;
+            // Corners the robot will PIVOT at are left sharp so the ring reaches the very
+            // corner (see corner_pivot_limits in coverage_planning.hpp).
+            std::function<bool(const std::pair<double, double>&, double)> keep_sharp;
+            if (pivot_ring_corners)
+            {
+              keep_sharp =
+                  [&ring_pivot_limits](const std::pair<double, double>& corner, double turn)
+              {
+                return turn > kSharpCornerPivotRad &&
+                       pivotSweepFits(corner.first, corner.second, ring_pivot_limits);
+              };
+            }
             auto rounded = roundSharpCorners(sparse,
                                              fillet_boundary,
                                              plan.safe_holes,
                                              kRingCornerThreshold,
                                              std::max(2.0 * min_turn_radius, min_turn_radius),
                                              std::max(0.02, min_turn_radius),
-                                             0.03);
+                                             0.03,
+                                             keep_sharp);
             loop = densifyPolyline(rounded, kDensifyStep);
           }
         }
@@ -1723,6 +1838,9 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
   const auto t_mainland0 = Clock::now();
   f2c::types::Cells mainland =
       (n_rings > 0) ? hl.generateHeadlands(safe_cells, n_rings * op_width) : safe_cells;
+  if (trace)
+    trace->stages.push_back({"rings", plan.rings});
+  traceCells(trace, "mainland", mainland);
   t_mainland_ms = elapsedMs(t_mainland0);
   mainland_area_m2 = mainland.area();
   if (mainland.size() == 0 || mainland.area() < 1e-6)
@@ -1743,10 +1861,13 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
   // swath-count-minimising angle, which is equally deterministic for a fixed
   // polygon.
   f2c::sg::BruteForce bf;
+  TracingBruteForce traced_bf;
+  traced_bf.trace = trace;
   // Coarsen the AUTO best-angle sweep from F2C's 1° default to kAutoAngleStepRad
   // (5°) — ~5× fewer candidate angles at a negligible plan-quality change (see
   // the constant). No effect on fixed-angle plans (they skip the sweep).
   bf.setStepAngle(kAutoAngleStepRad);
+  traced_bf.setStepAngle(kAutoAngleStepRad);
   f2c::obj::NSwath n_swath_obj;
   f2c::rp::BoustrophedonOrder order;
   double swath_strip_area = 0.0;  // Σ length·op_width of KEPT swaths (for the fraction)
@@ -1785,9 +1906,14 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
           std::max(swath_angle_candidates,
                    static_cast<int>(std::lround(2.0 * M_PI / kAutoAngleStepRad)));
     }
+    traced_bf.cell_index = i;
+    if (trace && cell_angle >= 0.0)
+      trace->stages.push_back({"fixed_angle." + std::to_string(i), {}, {cell_angle}});
     f2c::types::Swaths swaths = (cell_angle >= 0.0)
                                     ? generateEvenSwaths(bf, cell_angle, op_width, cell)
-                                    : bf.generateBestSwaths(n_swath_obj, op_width, cell);
+                                : trace ? traced_bf.generateBestSwaths(n_swath_obj, op_width, cell)
+                                        : bf.generateBestSwaths(n_swath_obj, op_width, cell);
+    traceSwaths(trace, "generated_swaths", i, swaths);
     if (swaths.size() == 0)
     {
       continue;
@@ -1827,6 +1953,8 @@ BoustrophedonPlan planBoustrophedon(const f2c::types::Cell& field_cell,
       }
     }
     f2c::types::Swaths ordered = order.genSortedSwaths(swaths);
+    traceSwaths(trace, "effective_swaths", i, swaths);
+    traceSwaths(trace, "ordered_swaths", i, ordered);
     for (std::size_t s = 0; s < ordered.size(); ++s)
     {
       const auto& sw = ordered[s];
@@ -2028,7 +2156,8 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
     ConnectorStats* stats,
     const std::vector<std::pair<double, double>>& swath_turn_boundary,
     const PivotJoinLimits& pivot_limits,
-    bool pin_first_subpath)
+    bool pin_first_subpath,
+    PlanningTrace* trace)
 {
   // Flatten the plan into ordered drivable segments (densified polylines),
   // rings first (outermost → inner) then the swaths.
@@ -2498,9 +2627,6 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // into a sub-trackable loop. Applied PER sub-path (each is independently
   // continuous; a fillet must never span a break).
   constexpr double kCornerThreshold = 88.0 * M_PI / 180.0;
-  // Unrounded corners sharper than this become in-place pivot corners. Below it
-  // FTC turns through the corner while moving (slowing) without cutting it.
-  constexpr double kSharpCornerPivotRad = 60.0 * M_PI / 180.0;
   const double fillet_r = std::max(turn_radius * 0.5, min_radius);
   std::vector<std::vector<std::pair<double, double>>> out;
   out.reserve(subpaths.size());
@@ -2559,12 +2685,14 @@ std::vector<std::vector<std::pair<double, double>>> buildContinuousSubPaths(
   // Sub-path DRIVE ORDER: see orderSubPathsForMinimalTransit's doc comment —
   // extracted to its own pure, unit-testable function (mowgli_coverage
   // convention for decision logic like this; see test_coverage_planning.cpp).
+  if (trace)
+    trace->stages.push_back({"connected_subpaths", out});
   return orderSubPathsForMinimalTransit(std::move(out), ring_subpath_count, pin_first_subpath);
 }
 
 std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTransit(
     std::vector<std::vector<std::pair<double, double>>> sub_paths,
-    std::size_t preserve_direction_count,
+    std::size_t ring_bearing_count,
     bool pin_first_seed)
 {
   // Minimize the blade-off Nav2 transit BETWEEN sub-paths. Sub-paths arrive in
@@ -2579,8 +2707,8 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
   //     U-turns (the hazard the seed-from-BoustrophedonOrder note in
   //     buildContinuousSubPaths guards); driving the same polyline backwards
   //     moves nothing.
-  //   * The SEED (which sub-path drives first) is tried at every candidate, not
-  //     pinned to the input's own first element (mowglinext#818: with only 2
+  //   * With NO rings, the SEED (which sub-path drives first) is tried at every
+  //     candidate, not pinned to the input's own first element (mowglinext#818: with only 2
   //     sub-paths, a fixed seed=0 can only ever reverse the OTHER one — it
   //     structurally cannot discover that starting from the other sub-path
   //     gives a shorter link, field-measured as a single 9.78 m gap on an
@@ -2598,11 +2726,14 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
   //     covers the reverse-the-other-one case the single-seed version had,
   //     plus every case where the BEST link is to the seed's normally-unused
   //     front end via a different sub-path arriving there first.
-  //   * All ring-bearing sub-paths retain their ORIGINAL winding. Rings arrive
-  //     before swaths, so the builder supplies the number of ring-bearing paths
-  //     at the start of the input, including a mixed ring/swath path. Protecting
-  //     only sub-path 0 let later obstacle loops silently reverse mow_direction.
-  //     Direct callers keep the historical sub-path-0 protection by default.
+  //   * All ring-bearing sub-paths retain their ORIGINAL winding AND stay ahead
+  //     of every interior-only path. Rings arrive before swaths, so the builder
+  //     supplies the number of ring-bearing paths at the start of the input,
+  //     including a mixed ring/swath path. The OUTERMOST-ring path is input 0
+  //     and remains the seed. This preserves the mower's headland-first contract:
+  //     a global transit optimum must not mow interior rows, relocate to the
+  //     perimeter, then return to the interior. Protecting direction alone was
+  //     insufficient because it still allowed the whole ring path to move.
   //   * Bounded to kMaxSeedSearchSize sub-paths (O(n^3) — every seed reruns the
   //     O(n^2) chain): a pathological multi-hole field with more lobes than that
   //     falls back to the single-seed=0 search instead, which is still a
@@ -2633,6 +2764,7 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
     std::vector<bool> reversed_flag;
     double transit;
   };
+  const std::size_t protected_count = std::min(ring_bearing_count, sub_paths.size());
   auto chainFromSeed = [&](std::size_t seed) -> SeedResult
   {
     SeedResult result{{seed}, std::vector<bool>(sub_paths.size(), false), 0.0};
@@ -2644,7 +2776,17 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
       std::size_t best = 0;
       bool best_rev = false;
       double best_d = std::numeric_limits<double>::max();
-      for (std::size_t j = 0; j < sub_paths.size(); ++j)
+      // Finish the ring-bearing prefix before considering an interior-only
+      // path. Once that prefix is consumed, search the whole unused remainder.
+      const bool rings_remain =
+          std::any_of(used.begin(),
+                      used.begin() + static_cast<std::ptrdiff_t>(protected_count),
+                      [](bool value)
+                      {
+                        return !value;
+                      });
+      const std::size_t candidate_end = rings_remain ? protected_count : sub_paths.size();
+      for (std::size_t j = 0; j < candidate_end; ++j)
       {
         if (used[j])
         {
@@ -2658,7 +2800,7 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
           best_rev = false;
         }
         // Preserve the operator's winding on every path containing a ring.
-        if (j < std::max(std::size_t{1}, preserve_direction_count))
+        if (j < std::max(std::size_t{1}, protected_count))
         {
           continue;
         }
@@ -2680,10 +2822,13 @@ std::vector<std::vector<std::pair<double, double>>> orderSubPathsForMinimalTrans
   };
 
   constexpr std::size_t kMaxSeedSearchSize = 40;
-  // pin_first_seed: the operator chose where the route starts, so sub-path 0 stays first
-  // (seed 0 only) and only the order of the rest is optimised.
+  // A ring-bearing plan always starts with input 0, which carries the outermost
+  // perimeter. pin_first_seed applies the same rule to a ring-free caller that
+  // explicitly selected its starting path.
   const std::size_t seed_count =
-      (!pin_first_seed && sub_paths.size() <= kMaxSeedSearchSize) ? sub_paths.size() : 1;
+      (protected_count == 0 && !pin_first_seed && sub_paths.size() <= kMaxSeedSearchSize)
+          ? sub_paths.size()
+          : 1;
   SeedResult best = chainFromSeed(0);
   for (std::size_t seed = 1; seed < seed_count; ++seed)
   {

@@ -42,7 +42,8 @@ import (
 // decision, not a guess, which is why they are recorded rather than "fixed".
 var modelPresetDivergesFromTemplate = map[string]string{
 	"caster_x_offset":  "template -1 preserves existing chassis-derived placement; explicitly applying the 500 preset proposes 0.40 m",
-	"chassis_z_offset": "template zero preserves existing collision/visual height; explicitly applying the 500 preset proposes -0.05 m",
+	"gps_z":            "template 0.20 keeps sparse installs unchanged; explicitly applying the 500 preset proposes 0.15 m (antenna on the lowered shell top)",
+	"chassis_z_offset": "generic template zero; selected preset upgrade geometry is generated from this preset and layered before saved overrides",
 	// Per-robot CALIBRATION OUTPUT, not a physical constant. The preset seeds a
 	// pre-calibration guess; check_config_drift.py already classifies
 	// ticks_per_meter as CALIBRATION_OUTPUT and expects it to differ.

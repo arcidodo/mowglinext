@@ -15,6 +15,7 @@
 | Change tree structure / a guard | `ros2/src/mowgli_behavior/trees/main_tree.xml` (Root `ReactiveSequence`: EmergencyGuard → SensorSafetyGuard → BoundaryGuard → LocalizationGuard → GPSModeSelector → Nav2ResumeGuard → MainLogic) |
 | Add a subscriber / service / param to the node | `ros2/src/mowgli_behavior/src/behavior_tree_node.cpp` (`setupSubscribers` :140, `setupServiceServer` :543, `setupBehaviorTree` :807) |
 | Shared state read by nodes (`ctx->…`) | `ros2/src/mowgli_behavior/include/mowgli_behavior/bt_context.hpp` (`BTContext`; thread-safety contract :77-103) |
+| Blade readiness before a new coverage goal (#666) | `include/mowgli_behavior/blade_ready.hpp`, `coverage_nodes.cpp` (`sendFollowGoal`, `bladeReadyForDispatch`); pure `test_blade_ready` and tick-level `test_follow_strip_dig`; limits and physical procedure: `docs/BLADE_READY_VALIDATION.md` |
 | High-level command handling (`COMMAND_*`, `~/start_in_area`) | `behavior_tree_node.cpp` :547-608 (`COMMAND_S2`→`COMMAND_START` normalisation :561) |
 | `HighLevelStatus` publish + 1 Hz republish with live fields | `src/status_nodes.cpp` (`PublishHighLevelStatus`), `src/status_snapshot.cpp` (`withLiveStatusFields`), `behavior_tree_node.cpp` :694-721 |
 | Coverage loop (area iteration, plan, follow, resume) | `src/coverage_nodes.cpp`: `GetNextUnmowedArea` :1461+, `PlanCoverageArea` :1888+, `FollowStrip` :147-1240, `TransitToStrip` :1247+ |
@@ -106,7 +107,7 @@
 | `test_coverage_persistence.cpp` | 552 | 22 tests: round-trip (incl. `area_ids`, mowglinext#637 phase 2), header/version, malformed rows, `current_command` restore |
 | `test_gnss_status_authority.cpp` | 56 | 2 tests: `mowgli_interfaces::gnss_status_utils` fix-type mapping the BT relies on |
 | `test_coverage_transit_gap.cpp` | 50 | Transit threshold wiring plus mandatory blade-off transit at every later sub-path boundary |
-| `test_coverage_resume_location.cpp` | 192 | 11 tests: `resolveResumeLocation` shared by `FollowStrip` and `PlanCoverageArea` |
+| `test_coverage_resume_location.cpp` | 250 | 16 tests: `resolveResumeLocation` and `resolveFirstDrive` (the first unit a pass drives = the first unit not recorded mowed, `nextUndoneUnit` in `unit_resume.hpp`; the cursor's unit is trimmed only when reached) shared by `FollowStrip` and `PlanCoverageArea`'s first transit goal |
 | `test_swath_progress.cpp` | 153 | 7 tests: `refreshSwathProgress` / `coveragePercentFromCursor` climb during a pass |
 | `test_detour_resume.cpp` | 365 | 15 tests: `footprintClear`, `decideDetour` |
 | `test_dig_skip.cpp` | ~290 | 18 tests: `dig_skip.hpp` (zones, dedup/bound of dig points, drivable runs incl. adjacent swaths / short runs / sparse legacy paths, settle wait) |

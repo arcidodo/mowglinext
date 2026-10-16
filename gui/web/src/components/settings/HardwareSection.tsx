@@ -11,12 +11,13 @@ import { useThemeMode } from "../../theme/ThemeContext.tsx";
 import { MOWER_MODELS } from "../../constants/mowerModels.ts";
 import { presetValuesForBackend } from "../../constants/hardwareBackends.ts";
 import { SettingFieldLabel } from "./SettingFieldLabel.tsx";
+import type {SettingsValues} from "../../types/settings.generated";
 
 const { Text, Paragraph } = Typography;
 
 type Props = {
     revealAdvanced?: boolean;
-    values: Record<string, any>;
+    values: SettingsValues;
     onChange: (key: string, value: any) => void;
     onBulkChange: (changes: Record<string, any>) => void;
     /** Settings whose default the robot's hardware backend replaces. */
@@ -209,7 +210,7 @@ export const HardwareSection: React.FC<Props> = ({
                                 <InputNumber aria-label={t("settingsHardware.encoderTicksPerMeter")} aria-description={t("settingsHardware.encoderTicksPerMeterTooltip")}  id="setting-ticks_per_meter"
                                     value={values.ticks_per_meter}
                                     onChange={(v) => onChange("ticks_per_meter", v)}
-                                    step={0.001} precision={3} style={{ width: "100%" }}
+                                    step={0.001} style={{ width: "100%" }}
                                 />
                             </Form.Item>
                         </Col>

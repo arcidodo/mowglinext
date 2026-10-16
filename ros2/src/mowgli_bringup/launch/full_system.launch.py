@@ -69,6 +69,18 @@ from robot_config_util import (  # noqa: E402
 )
 
 
+def _gnss_status_pairing_window_s(gnss_source: str) -> float:
+    # Direct Universal GNSS delivery was measured at only a few milliseconds,
+    # so retain the historical 50 ms association window there.
+    #
+    # The MAVROS canonical adapter deliberately holds /gps/fix for 100 ms while
+    # it pairs the private UG fix with GPS_RAW_INT/GPS2_RAW ellipsoid altitude.
+    # Real ARM64/Pixhawk measurements on 2026-10-03 showed fix-minus-status
+    # delivery skew of ~101-104 ms normally and 123.3 ms worst observed.
+    # 150 ms keeps useful headroom without adding that latency to direct GNSS.
+    return 0.15 if gnss_source == "mavros" else 0.05
+
+
 def generate_launch_description() -> LaunchDescription:
     # ------------------------------------------------------------------
     # Package directories
@@ -257,9 +269,15 @@ def generate_launch_description() -> LaunchDescription:
     # The Universal GNSS receiver runtime stays in the gps sidecar.
     # This process owns only its public-topic contract adapter.
     gnss_stack = str(robot_params.get("gnss_stack", "universal")).strip().lower()
+    gnss_source = os.environ.get("GNSS_SOURCE", "direct").strip().lower()
+    if gnss_source not in ("direct", "mavros"):
+        raise RuntimeError(
+            f"GNSS_SOURCE must be 'direct' or 'mavros', got {gnss_source!r}"
+        )
+    gnss_status_pairing_window_s = _gnss_status_pairing_window_s(gnss_source)
 
     gnss_bridge_node = None
-    if gnss_stack == "universal":
+    if gnss_stack == "universal" and gnss_source == "direct":
         gnss_bridge_node = Node(
             package="mowgli_gnss_bridge",
             executable="universal_gnss_topic_bridge",
@@ -365,6 +383,10 @@ def generate_launch_description() -> LaunchDescription:
             {"transit_speed": float(robot_params.get("transit_speed", 0.25))},
             {"mowing_speed": float(robot_params.get("mowing_speed", 0.2))},
             {"blade_auto_reverse": bool(robot_params.get("blade_auto_reverse", False))},
+            {"mowing_enabled": bool(robot_params.get("mowing_enabled", True))},
+            {"blade_ready_min_rpm": float(robot_params.get("blade_ready_min_rpm", 1000.0))},
+            {"blade_spinup_delay_sec": float(robot_params.get("blade_spinup_delay_sec", 1.5))},
+            {"blade_ready_timeout_sec": float(robot_params.get("blade_ready_timeout_sec", 6.0))},
             # mow_angle_deg: operator swath direction. -1 (negative) = AUTO
             # (coverage server picks the swath-count-minimising angle); 0..179 =
             # fixed swath angle in degrees. Read by PlanCoverageArea::buildGoal
@@ -640,6 +662,7 @@ def generate_launch_description() -> LaunchDescription:
             {
                 "datum_lat": datum_lat,
                 "datum_lon": datum_lon,
+                "status_pairing_window_s": gnss_status_pairing_window_s,
             },
             {"use_sim_time": use_sim_time},
         ],

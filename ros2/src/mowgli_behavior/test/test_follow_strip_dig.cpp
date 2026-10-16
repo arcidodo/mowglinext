@@ -45,6 +45,7 @@
 #include <condition_variable>
 #include <filesystem>
 #include <functional>
+#include <future>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -131,13 +132,31 @@ public:
         name,
         [this](const rclcpp_action::GoalUUID&, std::shared_ptr<const typename ActionT::Goal>)
         {
-          std::unique_lock<std::mutex> lock(mutex_);
-          ++requests_;
-          accept_cv_.wait(lock,
-                          [this]()
-                          {
-                            return !hold_accept_;
-                          });
+          std::shared_future<void> gate;
+
+          {
+            std::unique_lock<std::mutex> lock(mutex_);
+
+            // Preserve both request counters used by the test suites.
+            ++goal_requests_;
+            ++requests_;
+
+            // MAVROS: optionally delay the goal response.
+            gate = response_gate_;
+
+            // Dev: optionally hold goal acceptance.
+            accept_cv_.wait(lock,
+                            [this]()
+                            {
+                              return !hold_accept_;
+                            });
+          }
+
+          // Never wait on the future while holding mutex_.
+          if (gate.valid())
+          {
+            gate.wait();
+          }
           return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
         },
         [](const std::shared_ptr<Handle>)
@@ -148,6 +167,7 @@ public:
         {
           std::lock_guard<std::mutex> lock(mutex_);
           handles_.push_back(handle);
+          accepted_cv_.notify_all();
         });
   }
 
@@ -172,6 +192,30 @@ public:
   {
     std::lock_guard<std::mutex> lock(mutex_);
     return handles_.size();
+  }
+
+  bool waitForGoalCount(std::size_t count)
+  {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return accepted_cv_.wait_for(lock,
+                                 std::chrono::seconds(2),
+                                 [this, count]()
+                                 {
+                                   return handles_.size() >= count;
+                                 });
+  }
+
+  // A promise owned by the test deterministically withholds the server's goal
+  // response. Its destruction also releases the waiter after a failed ASSERT.
+  void deferGoalResponse(std::shared_future<void> gate)
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    response_gate_ = std::move(gate);
+  }
+
+  std::size_t goalRequests() const
+  {
+    return goal_requests_.load();
   }
 
   std::shared_ptr<const typename ActionT::Goal> goal(std::size_t i)
@@ -208,9 +252,12 @@ private:
   typename rclcpp_action::Server<ActionT>::SharedPtr server_;
   std::mutex mutex_;
   std::condition_variable accept_cv_;
+  std::condition_variable accepted_cv_;
   bool hold_accept_ = false;
   std::size_t requests_ = 0;
   std::vector<std::shared_ptr<Handle>> handles_;
+  std::shared_future<void> response_gate_;
+  std::atomic<std::size_t> goal_requests_{0};
 };
 
 }  // namespace
@@ -231,24 +278,9 @@ protected:
     server_node = rclcpp::Node::make_shared("fake_nav2");
     follow = std::make_unique<FakeActionServer<Follow>>(server_node, "/follow_path");
     navigate = std::make_unique<FakeActionServer<Navigate>>(server_node, "/navigate_to_pose");
-    blade_service = server_node->create_service<MowerControl>(
-        "/hardware_bridge/mower_control",
-        [this](const std::shared_ptr<MowerControl::Request> request,
-               std::shared_ptr<MowerControl::Response> response)
-        {
-          std::lock_guard<std::mutex> lock(blade_mutex);
-          blade_requests.push_back(*request);
-          response->success = true;
-        });
+    createBladeService();
 
-    executor = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
-    executor->add_node(ctx->node);
-    executor->add_node(server_node);
-    spinner = std::thread(
-        [this]()
-        {
-          executor->spin();
-        });
+    startExecutor();
 
     blackboard = BT::Blackboard::create();
     blackboard->set("context", ctx);
@@ -261,13 +293,96 @@ protected:
     follow->holdAccept(false);
     navigate->holdAccept(false);
     tree.reset();
+    stopExecutor();
+    stopBladeService();
+    follow.reset();
+    navigate.reset();
+  }
+
+  void startExecutor()
+  {
+    executor = std::make_unique<rclcpp::executors::MultiThreadedExecutor>();
+    executor->add_node(ctx->node);
+    executor->add_node(server_node);
+    spinner = std::thread(
+        [this]()
+        {
+          executor->spin();
+        });
+    // cancel() before spin() enters is lost when spin() sets its running flag.
+    while (!executor->is_spinning())
+    {
+      std::this_thread::yield();
+    }
+  }
+
+  void stopExecutor()
+  {
     executor->cancel();
     if (spinner.joinable())
     {
       spinner.join();
     }
-    follow.reset();
-    navigate.reset();
+    executor.reset();
+  }
+
+  void createBladeService()
+  {
+    blade_node = rclcpp::Node::make_shared("fake_blade_service");
+    blade_service = blade_node->create_service<MowerControl>(
+        "/hardware_bridge/mower_control",
+        [this](const std::shared_ptr<MowerControl::Request> request,
+               std::shared_ptr<MowerControl::Response> response)
+        {
+          std::lock_guard<std::mutex> lock(blade_mutex);
+          blade_requests.push_back(*request);
+          response->success = blade_service_success.load();
+        });
+    blade_executor = std::make_unique<rclcpp::executors::SingleThreadedExecutor>();
+    blade_executor->add_node(blade_node);
+    blade_stopping.store(false);
+    blade_spinner = std::thread(
+        [this]()
+        {
+          // A persistent stop flag also handles removal before this thread starts.
+          // spin_once waits for ROS work, with a bound so stopping needs no cancel().
+          while (!blade_stopping.load())
+          {
+            blade_executor->spin_once(std::chrono::milliseconds(20));
+          }
+        });
+  }
+
+  void stopBladeService()
+  {
+    blade_stopping.store(true);
+    if (blade_spinner.joinable())
+    {
+      blade_spinner.join();
+    }
+    // Release wait-set ownership only after all service callbacks have returned.
+    blade_executor.reset();
+    blade_service.reset();
+    blade_node.reset();
+  }
+
+  void removeBladeService()
+  {
+    const std::weak_ptr<rclcpp::Service<MowerControl>> removed_service = blade_service;
+    const std::weak_ptr<rclcpp::Node> removed_node = blade_node;
+    stopBladeService();
+    ASSERT_TRUE(removed_service.expired()) << "the fake mower-control service is still owned";
+    ASSERT_TRUE(removed_node.expired()) << "the fake blade-service node is still owned";
+    ASSERT_TRUE(executor->is_spinning()) << "removal must leave the main executor running";
+    auto probe = ctx->bladeClient();
+    // Check server endpoints: the global service-name list also includes clients.
+    const auto discovery_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((probe->service_is_ready() ||
+            ctx->node->count_services("/hardware_bridge/mower_control") != 0) &&
+           std::chrono::steady_clock::now() < discovery_deadline)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    ASSERT_FALSE(probe->service_is_ready());
+    ASSERT_EQ(ctx->node->count_services("/hardware_bridge/mower_control"), 0u);
   }
 
   /// `yaw` matters: the progress cursor only accepts a path pose oriented with
@@ -335,9 +450,14 @@ protected:
   rclcpp::Node::SharedPtr server_node;
   std::unique_ptr<FakeActionServer<Follow>> follow;
   std::unique_ptr<FakeActionServer<Navigate>> navigate;
+  rclcpp::Node::SharedPtr blade_node;
   rclcpp::Service<MowerControl>::SharedPtr blade_service;
+  std::unique_ptr<rclcpp::executors::SingleThreadedExecutor> blade_executor;
+  std::atomic<bool> blade_stopping{false};
+  std::thread blade_spinner;
   std::mutex blade_mutex;
   std::vector<MowerControl::Request> blade_requests;
+  std::atomic<bool> blade_service_success{true};
   std::unique_ptr<rclcpp::executors::MultiThreadedExecutor> executor;
   std::thread spinner;
   BT::Blackboard::Ptr blackboard;
@@ -355,7 +475,409 @@ protected:
     std::lock_guard<std::mutex> lock(blade_mutex);
     return blade_requests.at(i);
   }
+
+  // Server callbacks may lag the local pause state and include an earlier OFF.
+  // Wait for the intended command, rather than treating any new request as ON.
+  bool hasBladeRequest(bool enabled, std::size_t after)
+  {
+    std::lock_guard<std::mutex> lock(blade_mutex);
+    for (std::size_t i = after; i < blade_requests.size(); ++i)
+    {
+      if (blade_requests[i].mow_enabled == (enabled ? 1u : 0u))
+      {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool waitForBladeRequest(bool enabled, std::size_t after)
+  {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+      if (hasBladeRequest(enabled, after))
+        return true;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    return hasBladeRequest(enabled, after);
+  }
+
+  void reportBlade(double rpm, bool active = true)
+  {
+    std::lock_guard<std::mutex> lock(ctx->context_mutex);
+    ctx->latest_status.blade_status_stamp = ctx->node->now();
+    ctx->latest_status.mow_enabled = true;
+    ctx->latest_status.mower_esc_status = active ? 1 : 0;
+    ctx->latest_status.mower_motor_rpm = rpm;
+    ctx->last_status_time = std::chrono::steady_clock::now();
+    ctx->blade_telemetry_seen = true;
+  }
 };
+
+TEST_F(FollowStripDigTest, InitialCoverageWaitsForStableFreshBladeTelemetry)
+{
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(0.0);
+                  return false;
+                },
+                0.6),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_EQ(navigate->goalCount(), 0u);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 1;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+}
+
+TEST_F(FollowStripDigTest, SuccessfulBladeOffTransitUsesTheSameReadinessGate)
+{
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(2.0, 3.0)});
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return navigate->goalCount() == 1;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(navigate->goalCount(), 1u);
+  ASSERT_GT(bladeRequestCount(), 0u);
+  for (std::size_t i = 0; i < bladeRequestCount(); ++i)
+    EXPECT_EQ(bladeRequest(i).mow_enabled, 0u);
+  setRobot(2.0, 0.0);
+  reportBlade(3000.0);  // before ON: cannot establish readiness for the new request
+  navigate->succeed(0);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  return false;
+                },
+                0.5),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 1;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+}
+
+TEST_F(FollowStripDigTest, LiveStalledBladeFailsWithoutBookingUncutGround)
+{
+  ctx->blade_ready_config = {1000.0, 0.1, 0.5};
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  const std::size_t requests_before_failure = bladeRequestCount();
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(0.0);
+                  return false;
+                },
+                1.0),
+            BT::NodeStatus::FAILURE);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_TRUE(ctx->area_completed_swaths[0].empty());
+  EXPECT_TRUE(ctx->completed_areas.empty());
+  // Drain the final asynchronous OFF without re-ticking a failed tree.
+  ASSERT_TRUE(waitForBladeRequest(false, requests_before_failure));
+  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 0u);
+}
+
+TEST_F(FollowStripDigTest, LegacyFallbackStillWaitsBeforeDispatch)
+{
+  ctx->blade_ready_config = {1000.0, 0.3, 1.0};
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                []()
+                {
+                  return false;
+                },
+                0.15),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+}
+
+TEST_F(FollowStripDigTest, CommissioningDryRunNeverRequestsOnOrWaitsForBladeRpm)
+{
+  ctx->mowing_enabled = false;
+  reportBlade(0.0, false);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  ASSERT_GT(bladeRequestCount(), 0u);
+  for (std::size_t i = 0; i < bladeRequestCount(); ++i)
+    EXPECT_EQ(bladeRequest(i).mow_enabled, 0u);
+}
+
+TEST_F(FollowStripDigTest, HaltWhileAwaitingReadinessStopsBladeAndCannotDispatchLate)
+{
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                []()
+                {
+                  return false;
+                },
+                0.2),
+            BT::NodeStatus::RUNNING);
+  const std::size_t requests_before_halt = bladeRequestCount();
+  tree->haltTree();
+  reportBlade(3000.0);
+  ASSERT_TRUE(waitForBladeRequest(false, requests_before_halt));
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 0u);
+}
+
+TEST_F(FollowStripDigTest, OperatorOffRetainsNonCuttingCoverageWithoutTimerFallback)
+{
+  ctx->blade_direction.forOperatorCommand(false, 0);
+  reportBlade(0.0, false);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  return follow->goalCount() == 1;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  ASSERT_GT(bladeRequestCount(), 0u);
+  for (std::size_t i = 0; i < bladeRequestCount(); ++i)
+    EXPECT_EQ(bladeRequest(i).mow_enabled, 0u);
+}
+
+TEST_F(FollowStripDigTest, RejectedOnNeverDispatchesEvenWithHighRpm)
+{
+  blade_service_success.store(false);
+  reportBlade(3000.0);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return false;
+                },
+                1.0),
+            BT::NodeStatus::FAILURE);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_TRUE(ctx->area_completed_swaths[0].empty());
+}
+
+// Repeated removal must keep the main executor processing client responses and
+// fake Nav2 goals, even when the blade worker is stopped immediately after creation.
+TEST_F(FollowStripDigTest, BladeServiceRestartsKeepMainExecutorAndNav2Running)
+{
+  auto* const main_executor = executor.get();
+  auto probe = ctx->bladeClient();
+  auto follow_client = rclcpp_action::create_client<Follow>(ctx->node, "/follow_path");
+  ASSERT_TRUE(follow_client->wait_for_action_server(std::chrono::seconds(5)));
+  for (int cycle = 0; cycle < 20; ++cycle)
+  {
+    ASSERT_NO_FATAL_FAILURE(removeBladeService());
+    createBladeService();
+    // Stop immediately after creation, without relying on worker startup timing.
+    ASSERT_NO_FATAL_FAILURE(removeBladeService());
+    createBladeService();
+    ASSERT_TRUE(probe->wait_for_service(std::chrono::seconds(5)));
+    auto response = probe->async_send_request(std::make_shared<MowerControl::Request>());
+    ASSERT_EQ(response.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    ASSERT_TRUE(response.get()->success);
+    EXPECT_EQ(executor.get(), main_executor);
+    auto goal = follow_client->async_send_goal(Follow::Goal{});
+    ASSERT_EQ(goal.wait_for(std::chrono::seconds(2)), std::future_status::ready);
+    ASSERT_NE(goal.get(), nullptr);
+    // The client can receive acceptance before the server's accepted callback runs.
+    ASSERT_TRUE(follow->waitForGoalCount(cycle + 1));
+    follow->succeed(cycle);
+  }
+}
+
+TEST_F(FollowStripDigTest, MissingServiceDoesNotRenewTheReadinessTimeout)
+{
+  auto probe = ctx->bladeClient();
+  ASSERT_TRUE(probe->wait_for_service(std::chrono::seconds(5)));
+  ASSERT_NO_FATAL_FAILURE(removeBladeService());
+  ctx->blade_ready_config = {1000.0, 0.1, 0.6};
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  const auto started = std::chrono::steady_clock::now();
+  EXPECT_EQ(tickUntil(
+                []()
+                {
+                  return false;
+                },
+                1.5),
+            BT::NodeStatus::FAILURE);
+  EXPECT_LT(std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count(), 1.2);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_TRUE(ctx->area_completed_swaths[0].empty());
+}
+
+TEST_F(FollowStripDigTest, ServiceAppearingDuringWaitGetsOnWithoutRestartingGate)
+{
+  auto probe = ctx->bladeClient();
+  ASSERT_TRUE(probe->wait_for_service(std::chrono::seconds(5)));
+  ASSERT_NO_FATAL_FAILURE(removeBladeService());
+  ctx->blade_ready_config = {1000.0, 0.1, 2.0};
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(0.0, 1.0)});
+  EXPECT_EQ(tickUntil(
+                []()
+                {
+                  return false;
+                },
+                0.3),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  createBladeService();
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 1;
+                },
+                1.5),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  ASSERT_GT(bladeRequestCount(), 0u);
+  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 1u);
+}
+
+TEST_F(FollowStripDigTest, SecondUnitCannotReuseReadinessFromBeforeItsTransit)
+{
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(0.0, 1.0), straightUnit(1.2, 2.0)});
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 1;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(follow->goalCount(), 1u);
+  setRobot(1.0, 0.0);
+  follow->succeed(0);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return navigate->goalCount() == 1;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(navigate->goalCount(), 1u);
+  setRobot(1.2, 0.0);
+  navigate->succeed(0);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(0.0);
+                  return false;
+                },
+                0.5),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 2;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 2u);
+}
+
+TEST_F(FollowStripDigTest, DigDuringReadinessWaitCannotDispatchWhileItsNewTransitIsActive)
+{
+  reportBlade(0.0);
+  startFollowStrip({straightUnit(2.0, 5.0)});
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return navigate->goalCount() == 1;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(navigate->goalCount(), 1u);
+  setRobot(2.0, 0.0);
+  navigate->succeed(0);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  return bladeRequestCount() > 0 &&
+                         bladeRequest(bladeRequestCount() - 1).mow_enabled == 1u;
+                },
+                1.0),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  reportDig(2.0, 0.0);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return navigate->goalCount() == 2;
+                },
+                5.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(navigate->goalCount(), 2u);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  const auto resume = navigate->goal(1)->pose.pose.position;
+  EXPECT_FALSE(insideDigZone(resume.x, resume.y, {{2.0, 0.0}}, kRadius));
+  EXPECT_GT(resume.x, 2.0);
+  EXPECT_NEAR(resume.x, 2.0 + kRadius, kStep);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return false;
+                },
+                0.5),
+            BT::NodeStatus::RUNNING);
+  EXPECT_EQ(follow->goalCount(), 0u);
+  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 0u);
+  setRobot(resume.x, resume.y);
+  navigate->succeed(1);
+  EXPECT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  return follow->goalCount() == 1;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
+  ASSERT_EQ(follow->goalCount(), 1u);
+  EXPECT_FALSE(pathTouchesZone(follow->goal(0)->path, {2.0, 0.0}));
+}
 
 TEST_F(FollowStripDigTest, ShortScanDropoutCutsAndRestoresBladeWithoutReplacingCoverageGoal)
 {
@@ -425,12 +947,14 @@ TEST_F(FollowStripDigTest, ShortScanDropoutCutsAndRestoresBladeWithoutReplacingC
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
-                  return ctx->coverage_scan_paused && bladeRequestCount() > requests_before_pause &&
-                         sawStatus("SCAN_PAUSED");
+                  return ctx->coverage_scan_paused &&
+                         hasBladeRequest(false, requests_before_pause) && sawStatus("SCAN_PAUSED");
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
-  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 0u);
+  ASSERT_TRUE(hasBladeRequest(false, requests_before_pause));
+  ASSERT_TRUE(ctx->coverage_scan_paused);
+  EXPECT_FALSE(hasBladeRequest(true, requests_before_pause));
   EXPECT_EQ(follow->goalCount(), 1u);
   EXPECT_FALSE(follow->isCanceling(0));
   EXPECT_EQ(navigate->goalCount(), 0u);
@@ -447,7 +971,11 @@ TEST_F(FollowStripDigTest, ShortScanDropoutCutsAndRestoresBladeWithoutReplacingC
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
-                  if (ctx->coverage_scan_paused || bladeRequestCount() <= requests_before_resume)
+                  {
+                    std::lock_guard<std::mutex> lock(ctx->context_mutex);
+                    ctx->last_scan_time = std::chrono::steady_clock::now();
+                  }
+                  if (ctx->coverage_scan_paused || !hasBladeRequest(true, requests_before_resume))
                   {
                     return false;
                   }
@@ -457,7 +985,8 @@ TEST_F(FollowStripDigTest, ShortScanDropoutCutsAndRestoresBladeWithoutReplacingC
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
-  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 1u);
+  ASSERT_TRUE(hasBladeRequest(true, requests_before_resume));
+  ASSERT_FALSE(ctx->coverage_scan_paused);
   EXPECT_EQ(follow->goalCount(), 1u);
   EXPECT_FALSE(follow->isCanceling(0));
   EXPECT_EQ(navigate->goalCount(), 0u);
@@ -485,16 +1014,18 @@ TEST_F(FollowStripDigTest, ScanPauseSurvivesABladeOffTransitToTheNextUnit)
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
-                  return ctx->coverage_scan_paused && bladeRequestCount() > requests_before_pause;
+                  return ctx->coverage_scan_paused && hasBladeRequest(false, requests_before_pause);
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
+  ASSERT_TRUE(hasBladeRequest(false, requests_before_pause));
+  ASSERT_TRUE(ctx->coverage_scan_paused);
   const std::size_t first_blade_off = bladeRequestCount() - 1;
   ASSERT_EQ(bladeRequest(first_blade_off).mow_enabled, 0u);
 
   // Finish unit one, then let scans become fresh only DURING the structural
   // transit. That unobserved interval must not shorten the full fresh-scan
-  // window required after the second follow goal is active.
+  // window required before the second follow goal can be dispatched.
   follow->succeed(0);
   ASSERT_EQ(tickUntil(
                 [&]()
@@ -512,12 +1043,12 @@ TEST_F(FollowStripDigTest, ScanPauseSurvivesABladeOffTransitToTheNextUnit)
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
-                  return follow->goalCount() == 2;
+                  return !ctx->transiting;
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
   EXPECT_TRUE(ctx->coverage_scan_paused);
-  EXPECT_FALSE(follow->isCanceling(1));
+  EXPECT_EQ(follow->goalCount(), 1u);
   for (std::size_t i = first_blade_off; i < bladeRequestCount(); ++i)
   {
     EXPECT_EQ(bladeRequest(i).mow_enabled, 0u)
@@ -531,15 +1062,30 @@ TEST_F(FollowStripDigTest, ScanPauseSurvivesABladeOffTransitToTheNextUnit)
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   EXPECT_TRUE(ctx->coverage_scan_paused);
-  EXPECT_EQ(bladeRequestCount(), requests_before_resume);
+  EXPECT_FALSE(hasBladeRequest(true, requests_before_resume));
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
-                  return !ctx->coverage_scan_paused && bladeRequestCount() > requests_before_resume;
+                  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+                  ctx->last_scan_time = std::chrono::steady_clock::now();
+                  return !ctx->coverage_scan_paused &&
+                         hasBladeRequest(true, requests_before_resume);
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
-  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 1u);
+  ASSERT_TRUE(hasBladeRequest(true, requests_before_resume));
+  ASSERT_FALSE(ctx->coverage_scan_paused);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+                  ctx->last_scan_time = std::chrono::steady_clock::now();
+                  return follow->goalCount() == 2;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
   EXPECT_EQ(follow->goalCount(), 2u);
 }
 
@@ -617,8 +1163,8 @@ TEST_F(FollowStripDigTest, StaleScanDuringTransitKeepsBladeOffUntilFreshWindowAf
     ctx->last_scan_time = std::chrono::steady_clock::now() - std::chrono::seconds(2);
   }
 
-  // The transit completion immediately dispatches FollowCoveragePath. That
-  // hand-off must sample stale scan data before it can issue mower-on.
+  // The transit hand-off must sample stale scans before requesting mower-on
+  // or dispatching the second FollowCoveragePath goal.
   navigate->succeed(0);
   const std::size_t statuses_before_pause = [&]()
   {
@@ -638,12 +1184,7 @@ TEST_F(FollowStripDigTest, StaleScanDuringTransitKeepsBladeOffUntilFreshWindowAf
   EXPECT_EQ(mowgli_behavior::withLiveStatusFields(mowing_status, *ctx).sub_state_name,
             "SCAN_PAUSED");
   EXPECT_TRUE(waitForStatus("SCAN_PAUSED", statuses_before_pause));
-  const auto follow_goal_deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
-  while (follow->goalCount() < 2 && std::chrono::steady_clock::now() < follow_goal_deadline)
-  {
-    std::this_thread::sleep_for(std::chrono::milliseconds(20));
-  }
-  ASSERT_EQ(follow->goalCount(), 2u);
+  ASSERT_EQ(follow->goalCount(), 1u);
   for (std::size_t i = requests_before_stale_transit; i < bladeRequestCount(); ++i)
   {
     EXPECT_EQ(bladeRequest(i).mow_enabled, 0u)
@@ -669,17 +1210,31 @@ TEST_F(FollowStripDigTest, StaleScanDuringTransitKeepsBladeOffUntilFreshWindowAf
     std::this_thread::sleep_for(std::chrono::milliseconds(50));
   }
   EXPECT_TRUE(ctx->coverage_scan_paused);
-  EXPECT_EQ(bladeRequestCount(), requests_before_fresh_window);
+  EXPECT_FALSE(hasBladeRequest(true, requests_before_fresh_window));
 
   ASSERT_EQ(tickUntil(
                 [&]()
                 {
+                  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+                  ctx->last_scan_time = std::chrono::steady_clock::now();
                   return !ctx->coverage_scan_paused &&
-                         bladeRequestCount() > requests_before_fresh_window;
+                         hasBladeRequest(true, requests_before_fresh_window);
                 },
                 3.0),
             BT::NodeStatus::RUNNING);
-  EXPECT_EQ(bladeRequest(bladeRequestCount() - 1).mow_enabled, 1u);
+  ASSERT_TRUE(hasBladeRequest(true, requests_before_fresh_window));
+  ASSERT_FALSE(ctx->coverage_scan_paused);
+  EXPECT_EQ(follow->goalCount(), 1u);
+  ASSERT_EQ(tickUntil(
+                [&]()
+                {
+                  reportBlade(3000.0);
+                  std::lock_guard<std::mutex> lock(ctx->context_mutex);
+                  ctx->last_scan_time = std::chrono::steady_clock::now();
+                  return follow->goalCount() == 2;
+                },
+                2.0),
+            BT::NodeStatus::RUNNING);
   EXPECT_EQ(follow->goalCount(), 2u);
   EXPECT_FALSE(ctx->transiting);
   EXPECT_EQ(mowgli_behavior::withLiveStatusFields(mowing_status, *ctx).sub_state_name, "");
@@ -908,8 +1463,7 @@ TEST_F(FollowStripDigTest, HaltingBeforeTheTransitIsAnsweredStillCancelsIt)
   // The robot is at x=0 and the only unit starts at x=2, so the first dispatch is a transit.
   startFollowStrip({straightUnit(2.0, 4.0)});
 
-  // Tick until the transit has been sent (FollowStrip reports it through ctx->transiting), then
-  // halt at once, before the server's answer can have been picked up.
+  // Tick until the transit has been sent, then halt before the server answers.
   for (int i = 0; i < 20 && !ctx->transiting; ++i)
   {
     ASSERT_EQ(tree->tickOnce(), BT::NodeStatus::RUNNING);
@@ -1196,9 +1750,9 @@ TEST_F(FollowStripDigTest, FailedCheckpointWriteDoesNotLogCursorSaved)
   const auto tmp = path + ".tmp";
   ASSERT_TRUE(std::filesystem::create_directory(tmp));
 
-  ::testing::internal::CaptureStderr();
+  ::testing::internal::CaptureStdout();
   tree->haltTree();
-  const auto logs = ::testing::internal::GetCapturedStderr();
+  const auto logs = ::testing::internal::GetCapturedStdout();
   EXPECT_NE(logs.find("Coverage checkpoint write failed"), std::string::npos);
   EXPECT_NE(logs.find("resume cursor retained in memory only"), std::string::npos);
   EXPECT_EQ(logs.find("resume cursor saved"), std::string::npos);

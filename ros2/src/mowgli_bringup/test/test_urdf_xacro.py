@@ -124,13 +124,14 @@ def test_blade_offsets_preserve_legacy_and_locate_asymmetric_cutting_tool() -> N
 
 @pytest.mark.parametrize("length,centre,radius", [(0.60, 0.18, 0.03), (0.775, 0.30, 0.045)])
 @pytest.mark.parametrize("explicit", [False, True])
-def test_sparse_upgrade_preserves_geometry(tmp_path, length, centre, radius, explicit):
+@pytest.mark.parametrize("model", ["YardForce500", "YardForce500B", "CUSTOM"])
+def test_sparse_upgrade_preserves_geometry(tmp_path, length, centre, radius, explicit, model):
     """Exercise the real template merge, not just standalone xacro defaults."""
     spec = importlib.util.spec_from_file_location(
         "upgrade_robot_config", _PKG_DIR / "launch" / "robot_config_util.py")
     config = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config)
-    params = {"chassis_length": length, "chassis_center_x": centre,
+    params = {"mower_model": model, "chassis_length": length, "chassis_center_x": centre,
               "chassis_height": 0.19, "caster_radius": radius}
     if explicit:
         params.update(caster_x_offset=0.32, chassis_z_offset=-0.04)
@@ -149,4 +150,4 @@ def test_sparse_upgrade_preserves_geometry(tmp_path, length, centre, radius, exp
     for kind in ("visual", "collision"):
         origin = robot.find(f"./link[@name='base_link']/{kind}/origin")
         z = float(origin.attrib["xyz"].split()[2])
-        assert z == pytest.approx(0.095 + (-0.04 if explicit else 0.0))
+        assert z == pytest.approx(0.095 + (-0.04 if explicit else merged["chassis_z_offset"]))

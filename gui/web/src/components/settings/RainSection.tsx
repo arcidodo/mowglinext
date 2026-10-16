@@ -3,12 +3,13 @@ import { Card, Col, Form, InputNumber, Row, Space, Switch, Tag, Typography } fro
 import { CloudOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
 import { useThemeMode } from "../../theme/ThemeContext.tsx";
+import type {SettingsValues} from "../../types/settings.generated";
 import { useExternalRainState, type ExternalRainState } from "../../hooks/useExternalRainState.ts";
 
 const { Text, Paragraph } = Typography;
 
 type Props = {
-    values: Record<string, any>;
+    values: SettingsValues;
     onChange: (key: string, value: any) => void;
 };
 
